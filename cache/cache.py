@@ -15,6 +15,8 @@ class Cache:
         self.hits = 0
         self.miss = 0
         self.counts = 0
+        self.layer0_requests = None
+        self.non_layer0_requests = None
         self._trace_path = trace_path
         self._aligner = aligner_type(cache_line_size)
 
@@ -65,6 +67,30 @@ class Cache:
     
     def stat(self):
         return (self.hits, self.miss, self.counts, round(self.hits / self.counts, 4))
+
+    def layer_request_counts(self):
+        """Aggregate (x1, x2) = (#L0 requests, #non-L0 requests) from per-set algorithms.
+
+        Returns None if the underlying eviction algorithms do not expose these counters.
+        """
+        if not self.evict_algs:
+            return None
+
+        x1 = 0
+        x2 = 0
+        found = False
+        for alg in self.evict_algs:
+            if hasattr(alg, 'l0_requests') and hasattr(alg, 'non_l0_requests'):
+                x1 += int(getattr(alg, 'l0_requests'))
+                x2 += int(getattr(alg, 'non_l0_requests'))
+                found = True
+        if not found:
+            return None
+        return (x1, x2)
+
+    def set_layer_request_counts(self, x1, x2):
+        self.layer0_requests = int(x1)
+        self.non_layer0_requests = int(x2)
     
     # todo
     def set_stat(self, hits, miss, counts):

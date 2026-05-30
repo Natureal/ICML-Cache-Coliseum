@@ -1,6 +1,4 @@
 from data_trace.data_trace import DataTrace
-from model.models import ParrotModel, LightGBMModel
-from model import device_manager
 from utils.aligner import ShiftAligner, NormalAligner
 from cache.cache import Cache, BoostCache, DumpCache
 from cache.evict import *
@@ -14,6 +12,7 @@ import argparse
 import os
 import pickle
 import json
+import csv
 from pathos.multiprocessing import ProcessingPool as Pool
 
 def process_cache(cache):
@@ -21,7 +20,14 @@ def process_cache(cache):
         while not trace.done():
             pc, address = trace.next()
             cache.access(pc, address)
-        return cache.stat()
+        stat = cache.stat()
+        counts = None
+        if hasattr(cache, 'layer_request_counts'):
+            counts = cache.layer_request_counts()
+        if counts is None:
+            return stat
+        x1, x2 = counts
+        return (stat[0], stat[1], stat[2], stat[3], x1, x2)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -93,6 +99,10 @@ if __name__ == "__main__":
     parrot_gen = gbm_gen = None
     ckpt_root_dir = args.checkpoints_root_dir
     if 'parrot' in this_preds:
+        from model.models import ParrotModel
+        from model import device_manager
+
+        device_manager.set_device(args.device)
         this_dir = os.path.join(ckpt_root_dir, 'parrot', args.dataset, args.model_fraction)
         if not os.path.exists(this_dir):
             raise ValueError(f'Benchmark: {this_dir} not found checkpoints')
@@ -104,6 +114,8 @@ if __name__ == "__main__":
         print('Parrot Model Config Path:', args.parrot_config_path)
         parrot_gen = lambda : ParrotModel.from_config(args.parrot_config_path, this_ckpt_path)
     if 'gbm' in this_preds:
+        from model.models import LightGBMModel
+
         with open(args.lightgbm_config_path, "r") as f:
             model_config = json.load(f)
             deltanums = model_config['delta_nums']
@@ -138,13 +150,16 @@ if __name__ == "__main__":
             print('Benchmark: Use MultiProcess Boost')
     if args.boost_fr:
         print('Benchmark: Enable F&R Boost')
-    device = args.device
-    device_manager.set_device(device)
-
     online_types = [
         RandAlgorithm,
         LRUAlgorithm,
         MarkerAlgorithm,
+        #partial(RDMAlgorithm, max_support_factor=5),
+        partial(RDMAlgorithm, max_support_factor=20),
+        #partial(RDMAlgorithm, max_support_factor=20),
+        #partial(OnlineMinAlgorithm, max_support_factor=3),
+        partial(OnlineMinAlgorithm, max_support_factor=1000),
+        partial(OnlineMinRandomAlgorithm, max_support_factor=1000),
     ]
 
     sorted = False
@@ -234,13 +249,24 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(PredictiveMarker, 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(LMarker, 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(LNonMarker, 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
+
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(FollowerRobust, boost=args.boost_fr), 'PLECO-State', associativity=associativity),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'PLECO'),
+                #PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'PLECO'),
+                #PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'PLECO'),
             ])
             combiner_types.extend([
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), LRUAlgorithm]),
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), RDMAlgorithm]),
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), MarkerAlgorithm]),
-                (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), MarkerAlgorithm]),
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), OnlineMinAlgorithm]),
+                #(partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), MarkerAlgorithm]),
             ])
 
         ##########################################
@@ -254,13 +280,27 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(PredictiveMarker, 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(LMarker, 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(LNonMarker, 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'POPU'),
+                #PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
+                # PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
+                # PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
+                # PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(FollowerRobust, boost=args.boost_fr), 'POPU-State', associativity=associativity),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'POPU'),
+                #PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'POPU'),
             ])
             combiner_types.extend([
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), LRUAlgorithm]),
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), RDMAlgorithm]),
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), MarkerAlgorithm]),
-                (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), MarkerAlgorithm]),
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), OnlineMinAlgorithm]),
+                #(partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), MarkerAlgorithm]),
             ])
         
         ##########################################
@@ -271,6 +311,7 @@ if __name__ == "__main__":
             online_types.extend([
                 PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO-Bin', threshold=0.5),
                 PredictAlgorithmFactory.generate_predictive_algorithm(Mark0, 'PLECO-Bin', threshold=0.5),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'PLECO-Bin', threshold=0.5),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'PLECO-Bin', threshold=0.5),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'PLECO-Bin', threshold=0.5),
             ])
@@ -329,13 +370,28 @@ if __name__ == "__main__":
                 (PredictiveMarker, 'OracleDis'),
                 (LMarker, 'OracleDis'),
                 (LNonMarker, 'OracleDis'),
+                (partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBNewOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'OracleDis'),
+
                 (partial(FollowerRobust, boost=args.boost_fr), 'OracleState'),
-                (partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'OracleDis'),
-                (partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'OracleDis'),
+                #(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'OracleDis'),
+                #(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'OracleDis'),
             ])
             combiner_types.extend([
-                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), MarkerAlgorithm]),
-                (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), MarkerAlgorithm]),
+                (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), LRUAlgorithm]),
+                # (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), RDMAlgorithm]),
+                # (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), OnlineMinAlgorithm]),
+                # (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), MarkerAlgorithm]),
+                #(partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), RDMAlgorithm]),
+                # (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), LRUAlgorithm]),
+                # (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), RDMAlgorithm]),
+                # (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), OnlineMinAlgorithm]),
+                # (partial(CombineRandomAlgorithm, alpha=0.0, beta=0.99, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), MarkerAlgorithm]),
             ])
 
         #####################################################
@@ -344,6 +400,7 @@ if __name__ == "__main__":
                 (PredictAlgorithm, 'OracleBin'),
                 (Mark0, 'OracleBin'),
                 (MarkAndPredict, 'OraclePhase'),
+                (partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'OracleBin'),
                 (partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'OracleBin'),
                 (partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'OracleBin'),
             ])
@@ -470,6 +527,8 @@ if __name__ == "__main__":
             stats = list(tqdm.tqdm(pool.map(process_cache, caches), total=len(caches)))
         for i, stat in enumerate(stats):
             caches[i].set_stat(stats[i][0], stats[i][1], stats[i][2])
+            if len(stat) >= 6 and hasattr(caches[i], 'set_layer_request_counts'):
+                caches[i].set_layer_request_counts(stat[4], stat[5])
     else:
         with DataTrace(file_path) as trace:
             with tqdm.tqdm(desc="Producing cache on MemoryTrace") as pbar:
@@ -478,6 +537,13 @@ if __name__ == "__main__":
                     for cache in caches:
                         cache.access(pc, address)
                     pbar.update(1)
+
+        # Aggregate and store OnlineMin layer request counts (single-process runs).
+        for cache in caches:
+            if hasattr(cache, 'layer_request_counts') and hasattr(cache, 'set_layer_request_counts'):
+                counts = cache.layer_request_counts()
+                if counts is not None:
+                    cache.set_layer_request_counts(counts[0], counts[1])
 
     table = PrettyTable() 
 
@@ -511,15 +577,32 @@ if __name__ == "__main__":
                 lst.extend([lst[-1]] * (len(table.field_names) - 2))
             table.add_row(lst)
 
+    def write_table_csv(path):
+        with open(path, "w", encoding="utf-8", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(table.field_names)
+            writer.writerows(table._rows)
+
     if args.dump_file:
         res_dir = os.path.join(args.output_root_dir, args.dataset, args.model_fraction)
         if not os.path.exists(res_dir):
             os.makedirs(res_dir)
         if args.real:
-            with open(os.path.join(res_dir, f"{'_'.join(this_preds)}.csv"), "w", encoding="utf-8") as file:
-                file.write(table.get_csv_string())
+            write_table_csv(os.path.join(res_dir, f"{'_'.join(this_preds)}.csv"))
         else:
-            with open(os.path.join(res_dir, f"{args.noise_type}.csv"), "w", encoding="utf-8") as file:
-                file.write(table.get_csv_string())
+            write_table_csv(os.path.join(res_dir, f"{args.noise_type}.csv"))
+    # Print OnlineMin phase stats: x1=#(L0 requests), x2=#(non-L0 requests).
+    for i, (pretty_name, noise, this_partial) in enumerate(funcs):
+        this_cls = this_partial
+        if hasattr(this_partial, 'func'):
+            this_cls = this_partial.func
+        if this_cls is OnlineMinAlgorithm and noise == 0:
+            x1 = getattr(caches[i], 'layer0_requests', None)
+            x2 = getattr(caches[i], 'non_layer0_requests', None)
+            if x1 is None or x2 is None:
+                continue
+            ratio = float('inf') if x1 == 0 else (x1 + x2) / x1
+            print(f'OnlineMin layer stats: x1={x1}, x2={x2}, (x1+x2)/x1={ratio}')
+
     print(table)
             

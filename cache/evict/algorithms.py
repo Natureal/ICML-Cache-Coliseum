@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import List, Union, Type
+from typing import Dict, List, Union, Type, Optional
 from cache.evict.evictor import *
 from cache.evict.predictor import *
 import numpy as np
 import types
 import copy
 import random
+import math
 
 class EvictAlgorithm(ABC):
     """Evict an entry from one cache line
@@ -894,6 +895,1399 @@ class MarkerAlgorithm(EvictAlgorithm):
         self.scores[target_index] = 1
         return hit
 
+
+class OnlineMinAlgorithm(EvictAlgorithm):
+    """OnlineMin: A Fast Strongly Competitive Randomized Paging Algorithm.
+
+    This implementation follows the paper's high-level algorithm (Section 3.1):
+    - Maintain support layers L1..Lk (Equitable2 update rule with forgiveness).
+    - Maintain a random priority (rank) for each page in the support.
+    - On a miss, evict the minimum-priority page from a specific prefix of cache
+      pages (determined by layers), then update layers.
+
+    Notes for this codebase:
+    - The theoretical algorithm starts with k distinct pages already in cache.
+      Here we warm up until the set is full, then initialize layers as k
+      singleton (revealed) layers in LRU order.
+    """
+
+    def __init__(self, associativity: int, max_support_factor: int = 3):
+        super().__init__(associativity)
+        self.k = associativity
+        if max_support_factor < 1:
+            raise ValueError('OnlineMin: max_support_factor must be >= 1')
+        self.max_support_factor = int(max_support_factor)
+        self.max_support = self.max_support_factor * self.k
+
+        # Support layers: index 1..k used; index 0 unused.
+        self.layers = [set() for _ in range(self.k + 1)]
+        self.support = set()
+
+        # Random priorities (lower = smaller priority). Only for pages in support.
+        self.priority = {}
+        self._free_priorities = list(range(1, self.max_support + 1))
+
+        # Page -> current layer index (1..k). Only defined for pages in support.
+        self.layer_of = {}
+
+        # Warm-up: maintain recency order until cache becomes full.
+        self._inited = False
+        self._warmup_lru = []  # oldest -> newest
+
+        # Record last access time for pages in support (layers 1..k).
+        self.timestamp = 0
+        self.support_last_access: Dict[object, int] = {}
+        self.support_last_evict: Dict[object, int] = {}
+
+        # Stats: count requests to L0 vs non-L0 (after initialization).
+        self.l0_requests = 0
+        self.non_l0_requests = 0
+
+    def _assign_priority(self, page):
+        if page in self.priority:
+            return
+        if not self._free_priorities:
+            raise ValueError('OnlineMin: priority universe exhausted')
+        pr = random.choice(self._free_priorities)
+        self._free_priorities.remove(pr)
+        self.priority[page] = pr
+
+    def _delete_priority(self, page):
+        pr = self.priority.pop(page, None)
+        if pr is not None:
+            self._free_priorities.append(pr)
+
+    def _rebuild_layer_of(self):
+        new_layer_of = {}
+        new_support = set()
+        for i in range(1, self.k + 1):
+            for p in self.layers[i]:
+                new_layer_of[p] = i
+                new_support.add(p)
+
+        # Reclaim priorities for pages that left the support BEFORE assigning
+        # priorities to newly added support pages.
+        for p in list(self.priority.keys()):
+            if p not in new_support:
+                self._delete_priority(p)
+
+        if len(new_support) > self.max_support:
+            raise RuntimeError(
+                'OnlineMin invariant violated: support size exceeded 3k. '
+                f'support_size={len(new_support)} max_support={self.max_support}'
+            )
+
+        self.layer_of = new_layer_of
+        self.support = new_support
+
+        # Keep last-access records only for pages still in support.
+        for p in list(self.support_last_access.keys()):
+            if p not in new_support:
+                self.support_last_access.pop(p, None)
+
+        # Keep last-evict records only for pages still in support.
+        for p in list(self.support_last_evict.keys()):
+            if p not in new_support:
+                self.support_last_evict.pop(p, None)
+
+        for p in new_support:
+            self._assign_priority(p)
+
+    def _init_layers_from_warmup(self):
+        # Build k singleton (revealed) layers from warm-up LRU order.
+        pages = [p for p in self._warmup_lru if p is not None]
+        if len(pages) < self.k:
+            return
+        pages = pages[-self.k:]
+        self.layers = [set() for _ in range(self.k + 1)]
+        for i, p in enumerate(pages, start=1):
+            self.layers[i] = {p}
+            self._assign_priority(p)
+        self._rebuild_layer_of()
+        self._inited = True
+
+    def _warmup_access(self, pc, address):
+        """Handle common pre-initialization cache filling and LRU ordering."""
+        if self._inited:
+            return False, None, None
+
+        if address in self.cache:
+            idx = self.cache.index(address)
+            self.pcs[idx] = pc
+            if address in self._warmup_lru:
+                self._warmup_lru.remove(address)
+            self._warmup_lru.append(address)
+            return True, True, idx
+
+        if None in self.cache:
+            idx = self.cache.index(None)
+            self.cache[idx] = address
+            self.pcs[idx] = pc
+            self._assign_priority(address)
+            if address in self._warmup_lru:
+                self._warmup_lru.remove(address)
+            self._warmup_lru.append(address)
+            if None not in self.cache:
+                self._init_layers_from_warmup()
+            return True, False, idx
+
+        if not self._warmup_lru:
+            self._warmup_lru = [p for p in self.cache if p is not None]
+        self._init_layers_from_warmup()
+        return False, None, None
+
+    def _update_layers_after_request(self, page, layer_i: int, forgiveness: bool):
+        # Apply Definition 1 (Equitable2 update rule with forgiveness).
+        if layer_i == 0:
+            if not forgiveness:
+                # (L0\{p}, L1, ..., L_{k-2}, L_{k-1} ∪ L_k, {p})
+                if self.k >= 2:
+                    self.layers[self.k - 1] |= self.layers[self.k]
+                self.layers[self.k] = {page}
+            else:
+                # (L0\{p} ∪ L1, L2, ..., L_k, {p})  => support loses old L1.
+                dropped = self.layers[1]
+                for q in dropped:
+                    self._delete_priority(q)
+                for j in range(1, self.k):
+                    self.layers[j] = self.layers[j + 1]
+                self.layers[self.k] = {page}
+        else:
+            i = layer_i
+            if i < self.k:
+                # (.., L_{i-1} ∪ (L_i \ {p}), L_{i+1}, ..., L_k, {p})
+                self.layers[i - 1] |= (self.layers[i] - {page})
+                for j in range(i, self.k):
+                    self.layers[j] = self.layers[j + 1]
+                self.layers[self.k] = {page}
+            else:
+                # i == k: page already in Lk (revealed); keep singleton.
+                self.layers[self.k] = {page}
+
+        self._rebuild_layer_of()
+
+    def access(self, pc, address):
+        ts = self.timestamp
+        handled, hit, _ = self._warmup_access(pc, address)
+        if handled:
+            self.support_last_access[address] = ts
+            self.timestamp += 1
+            return hit
+
+        # OnlineMin proper.
+        hit = address in self.cache
+        if hit:
+            idx = self.cache.index(address)
+            self.pcs[idx] = pc
+
+        support_size = len(self.support)
+        layer_i = self.layer_of.get(address, 0)
+
+        # Count requests by layer (L0 is implicit as "not in support").
+        if layer_i == 0:
+            self.l0_requests += 1
+        else:
+            self.non_l0_requests += 1
+
+        forgiveness = (layer_i == 0 and support_size == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        # Fail fast with a clear error instead of crashing with KeyError in
+        # `self.layer_of[p]` if invariants were broken earlier.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'OnlineMin invariant violated: cache contains non-support pages (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        if not hit:
+            if None in self.cache:
+                idx = self.cache.index(None)
+                self.cache[idx] = address
+                self.pcs[idx] = pc
+            else:
+                cache_pages = [p for p in self.cache if p is not None]
+                if eviction_layer == 0:
+                    victim = min(cache_pages, key=lambda p: self.priority[p])
+                else:
+                    # Identify the prefix of
+                    # Sort cache pages by increasing layer index.
+                    cache_pages.sort(key=lambda p: self.layer_of[p])
+                    j = None
+                    for jj in range(eviction_layer, self.k + 1):
+                        if self.layer_of[cache_pages[jj - 1]] == jj:
+                            j = jj
+                            break
+                    if j is None:
+                        # Should not happen; fall back to evicting global min priority.
+                        victim = min(cache_pages, key=lambda p: self.priority[p])
+                    else:
+                        # unexpected = 0
+                        # for x in range(j + 1, self.k + 1):
+                        #     if len(self.layers[x]) > 1:
+                        #         print('OnlineMin warning: unexpected layer structure during eviction')
+                        #         unexpected = 1
+                        #         break
+                        # if unexpected:
+                        #     for x in range(j + 1, self.k + 1):
+                        #         # print(
+                        #         #     f'  Critical Layer {x}: {[(p, ts_p) for p in self.layers[x] for ts_p in [self.support_last_access.get(p)] if self.support_last_evict.get(address) is not None and ts_p is not None and ts_p < self.support_last_evict.get(address)]} '
+                        #         #     f'addr_last_evict={self.support_last_evict.get(address)}'
+                        #         # )
+                        #         print(
+                        #             f'  Layer {x}: {[(p, self.support_last_access.get(p)) for p in self.layers[x]]} '
+                        #             f'addr_last_evict={self.support_last_evict.get(address)}'
+                        #         )
+                        prefix = cache_pages[:j]
+                        victim = min(prefix, key=lambda p: self.priority[p])
+
+                victim_idx = self.cache.index(victim)
+                self.support_last_evict[victim] = ts
+                self.cache[victim_idx] = address
+                self.pcs[victim_idx] = pc
+
+        # Update layers after cache update (as in the paper).
+        self._update_layers_after_request(address, layer_i, forgiveness)
+
+        # Record last access for the accessed page (kept only if in support).
+        self.support_last_access[address] = ts
+
+        # Support can be larger than the cache (up to 3k), so support\cache is allowed.
+        # But cache must never contain pages outside the support.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'OnlineMin invariant violated: cache contains non-support pages. '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} '
+                f'cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        self.timestamp += 1
+        return hit
+
+class OnlineMinRandomAlgorithm(EvictAlgorithm):
+    """OnlineMinRandom: A Fast Strongly Competitive Randomized Paging Algorithm.
+
+    This implementation follows the paper's high-level algorithm (Section 3.1):
+    - Maintain support layers L1..Lk (Equitable2 update rule with forgiveness).
+    - Maintain a random priority (rank) for each page in the support.
+    - On a miss, evict the minimum-priority page from a specific prefix of cache
+      pages (determined by layers), then update layers.
+
+    Notes for this codebase:
+    - The theoretical algorithm starts with k distinct pages already in cache.
+      Here we warm up until the set is full, then initialize layers as k
+      singleton (revealed) layers in LRU order.
+    """
+
+    def __init__(self, associativity: int, max_support_factor: int = 3):
+        super().__init__(associativity)
+        self.k = associativity
+        if max_support_factor < 1:
+            raise ValueError('OnlineMinRandom: max_support_factor must be >= 1')
+        self.max_support_factor = int(max_support_factor)
+        self.max_support = self.max_support_factor * self.k
+
+        # Support layers: index 1..k used; index 0 unused.
+        self.layers = [set() for _ in range(self.k + 1)]
+        self.support = set()
+
+        # Random priorities (lower = smaller priority). Only for pages in support.
+        self.priority = {}
+        self._free_priorities = list(range(1, self.max_support + 1))
+
+        # Page -> current layer index (1..k). Only defined for pages in support.
+        self.layer_of = {}
+
+        # Warm-up: maintain recency order until cache becomes full.
+        self._inited = False
+        self._warmup_lru = []  # oldest -> newest
+
+        # Record last access time for pages in support (layers 1..k).
+        self.timestamp = 0
+        self.support_last_access: Dict[object, int] = {}
+        self.support_last_evict: Dict[object, int] = {}
+
+        # Stats: count requests to L0 vs non-L0 (after initialization).
+        self.l0_requests = 0
+        self.non_l0_requests = 0
+
+    def _assign_priority(self, page):
+        if page in self.priority:
+            return
+        if not self._free_priorities:
+            raise ValueError('OnlineMinRandom: priority universe exhausted')
+        pr = random.choice(self._free_priorities)
+        self._free_priorities.remove(pr)
+        self.priority[page] = pr
+
+    def _delete_priority(self, page):
+        pr = self.priority.pop(page, None)
+        if pr is not None:
+            self._free_priorities.append(pr)
+
+    def _rebuild_layer_of(self):
+        new_layer_of = {}
+        new_support = set()
+        for i in range(1, self.k + 1):
+            for p in self.layers[i]:
+                new_layer_of[p] = i
+                new_support.add(p)
+
+        # Reclaim priorities for pages that left the support BEFORE assigning
+        # priorities to newly added support pages.
+        for p in list(self.priority.keys()):
+            if p not in new_support:
+                self._delete_priority(p)
+
+        if len(new_support) > self.max_support:
+            raise RuntimeError(
+                'OnlineMinRandom invariant violated: support size exceeded 3k. '
+                f'support_size={len(new_support)} max_support={self.max_support}'
+            )
+
+        self.layer_of = new_layer_of
+        self.support = new_support
+
+        # Keep last-access records only for pages still in support.
+        # for p in list(self.support_last_access.keys()):
+        #     if p not in new_support:
+        #         self.support_last_access.pop(p, None)
+
+        # Keep last-evict records only for pages still in support.
+        # for p in list(self.support_last_evict.keys()):
+        #     if p not in new_support:
+        #         self.support_last_evict.pop(p, None)
+
+        for p in new_support:
+            self._assign_priority(p)
+
+    def _init_layers_from_warmup(self):
+        # Build k singleton (revealed) layers from warm-up LRU order.
+        pages = [p for p in self._warmup_lru if p is not None]
+        if len(pages) < self.k:
+            return
+        pages = pages[-self.k:]
+        self.layers = [set() for _ in range(self.k + 1)]
+        for i, p in enumerate(pages, start=1):
+            self.layers[i] = {p}
+            self._assign_priority(p)
+        self._rebuild_layer_of()
+        self._inited = True
+
+    def _update_layers_after_request(self, page, layer_i: int, forgiveness: bool):
+        # Apply Definition 1 (Equitable2 update rule with forgiveness).
+        if layer_i == 0:
+            if not forgiveness:
+                # (L0\{p}, L1, ..., L_{k-2}, L_{k-1} ∪ L_k, {p})
+                if self.k >= 2:
+                    self.layers[self.k - 1] |= self.layers[self.k]
+                self.layers[self.k] = {page}
+            else:
+                # (L0\{p} ∪ L1, L2, ..., L_k, {p})  => support loses old L1.
+                dropped = self.layers[1]
+                for q in dropped:
+                    self._delete_priority(q)
+                for j in range(1, self.k):
+                    self.layers[j] = self.layers[j + 1]
+                self.layers[self.k] = {page}
+        else:
+            i = layer_i
+            if i < self.k:
+                # (.., L_{i-1} ∪ (L_i \ {p}), L_{i+1}, ..., L_k, {p})
+                self.layers[i - 1] |= (self.layers[i] - {page})
+                for j in range(i, self.k):
+                    self.layers[j] = self.layers[j + 1]
+                self.layers[self.k] = {page}
+            else:
+                # i == k: page already in Lk (revealed); keep singleton.
+                self.layers[self.k] = {page}
+
+        self._rebuild_layer_of()
+
+    def access(self, pc, address):
+        ts = self.timestamp
+        # Warm-up phase: behave like a simple LRU fill until full, then init.
+        if not self._inited:
+            if address in self.cache:
+                hit = True
+                idx = self.cache.index(address)
+                self.pcs[idx] = pc
+                if address in self._warmup_lru:
+                    self._warmup_lru.remove(address)
+                self._warmup_lru.append(address)
+                self.support_last_access[address] = ts
+                self.timestamp += 1
+                return hit
+
+            hit = False
+            if None in self.cache:
+                idx = self.cache.index(None)
+                self.cache[idx] = address
+                self.pcs[idx] = pc
+                self._assign_priority(address)
+                if address in self._warmup_lru:
+                    self._warmup_lru.remove(address)
+                self._warmup_lru.append(address)
+                if None not in self.cache:
+                    self._init_layers_from_warmup()
+                self.support_last_access[address] = ts
+                self.timestamp += 1
+                return hit
+
+            # Cache is full but layers not initialized (should be rare). Initialize now.
+            if not self._warmup_lru:
+                self._warmup_lru = [p for p in self.cache if p is not None]
+            self._init_layers_from_warmup()
+
+        # OnlineMinRandom proper.
+        hit = address in self.cache
+        if hit:
+            idx = self.cache.index(address)
+            self.pcs[idx] = pc
+
+        support_size = len(self.support)
+        layer_i = self.layer_of.get(address, 0)
+
+        # Count requests by layer (L0 is implicit as "not in support").
+        if layer_i == 0:
+            self.l0_requests += 1
+        else:
+            self.non_l0_requests += 1
+
+        forgiveness = (layer_i == 0 and support_size == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        # Fail fast with a clear error instead of crashing with KeyError in
+        # `self.layer_of[p]` if invariants were broken earlier.
+        # cache_set = {p for p in self.cache if p is not None}
+        # extras = [p for p in cache_set if p not in self.support]
+        # if extras:
+        #     raise RuntimeError(
+        #         'OnlineMinRandom invariant violated: cache contains non-support pages (pre-evict). '
+        #         f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+        #     )
+
+        if not hit:
+            if None in self.cache:
+                idx = self.cache.index(None)
+                self.cache[idx] = address
+                self.pcs[idx] = pc
+            else:
+                cache_pages = [p for p in self.cache if p is not None]
+                eviction_candidates = []
+                for jj in range(1, self.k + 1):
+                    if self.support_last_evict.get(address) == None or self.support_last_access.get(cache_pages[jj - 1]) < self.support_last_evict.get(address):
+                        eviction_candidates.append(cache_pages[jj - 1])
+                if len(eviction_candidates) == 0:
+                    # print("eviction_layer:", eviction_layer)
+                    # for jj in range(1, self.k + 1):
+                    #     print(f"Last access of cache page {cache_pages[jj - 1]}(layer {self.layer_of.get(cache_pages[jj - 1], 'N/A')}): {self.support_last_access.get(cache_pages[jj - 1])}, last evict of address {address}: {self.support_last_evict.get(address)}")
+                    eviction_candidates = cache_pages
+                if eviction_layer == 0:
+                    #victim = min(cache_pages, key=lambda p: self.priority[p])
+                    #victim = random.choice(cache_pages)
+                    victim = min(cache_pages, key=lambda p: self.support_last_access.get(p, -1))
+                else:
+                    
+                    #victim = min(eviction_candidates, key=lambda p: self.priority[p])
+                    #victim = random.choice(eviction_candidates)
+                    victim = min(eviction_candidates, key=lambda p: self.support_last_access.get(p, -1))
+                    # Sort cache pages by increasing layer index.
+                    # cache_pages.sort(key=lambda p: self.layer_of[p])
+                    # j = None
+                    # for jj in range(eviction_layer, self.k + 1):
+                    #     if self.layer_of[cache_pages[jj - 1]] == jj:
+                    #         j = jj
+                    #         break
+                    # for jj in range(eviction_layer, self.k + 1):
+                    #     if self.support_last_access.get(cache_pages[jj - 1]) >= self.support_last_evict.get(address):
+                    #         j = jj - 1
+                    #         break
+                    # for jj in range(self.k + 1, eviction_layer - 1, -1):
+                    #     if len(self.layers[jj]) > 1:
+                    #         j = jj
+                    #         break
+                    # if j is None:
+                    #     # Should not happen; fall back to evicting global min priority.
+                    #     victim = min(cache_pages, key=lambda p: self.priority[p])
+                    #     print('OnlineMinRandom warning 1: unexpected layer structure during eviction')
+                    # else:
+                    #     unexpected = 0
+                    #     for x in range(j + 1, self.k + 1):
+                    #         if self.support_last_access.get(cache_pages[x - 1]) < self.support_last_evict.get(address):
+                    #             print('OnlineMinRandom warning 2: unexpected layer structure during eviction')
+                    #             unexpected = 1
+                    #             break
+                    #     if unexpected:
+                    #         for x in range(j + 1, self.k + 1):
+                    #             print(
+                    #                 f'  Critical Layer {x}: {[(p, ts_p) for p in self.layers[x] for ts_p in [self.support_last_access.get(p)] if self.support_last_evict.get(address) is not None and ts_p is not None and ts_p < self.support_last_evict.get(address)]} '
+                    #                 f'addr_last_evict={self.support_last_evict.get(address)}'
+                    #             )
+                    #             print(
+                    #                 f'  Layer {x}: {[(p, self.support_last_access.get(p)) for p in self.layers[x]]} '
+                    #                 f'addr_last_evict={self.support_last_evict.get(address)}'
+                    #             )
+                        
+                    #     prefix_idx = j
+                    #     for x in range(j + 1, self.k + 1):
+                    #         if self.support_last_access.get(cache_pages[x - 1]) < self.support_last_evict.get(address):
+                    #             prefix_idx = x
+                    #             if prefix_idx > j:
+                    #                 print(f'OnlineMinRandom warning 3: cache_pages{prefix_idx} > j{j}, since page {cache_pages[x - 1]} last_access {self.support_last_access.get(cache_pages[x - 1])} < addr last_evict {self.support_last_evict.get(address)}')
+                    #         else:
+                    #             break
+                    #     prefix = cache_pages[:j]
+                    #     victim = min(prefix, key=lambda p: self.priority[p])
+
+                victim_idx = self.cache.index(victim)
+                self.support_last_evict[victim] = ts
+                self.cache[victim_idx] = address
+                self.pcs[victim_idx] = pc
+
+        # Update layers after cache update (as in the paper).
+        self._update_layers_after_request(address, layer_i, forgiveness)
+
+        # Record last access for the accessed page (kept only if in support).
+        self.support_last_access[address] = ts
+
+        # Support can be larger than the cache (up to 3k), so support\cache is allowed.
+        # But cache must never contain pages outside the support.
+        # cache_set = {p for p in self.cache if p is not None}
+        # extras = [p for p in cache_set if p not in self.support]
+        # if extras:
+        #     raise RuntimeError(
+        #         'OnlineMin invariant violated: cache contains non-support pages. '
+        #         f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+        #         f'extras={extras} '
+        #         f'cache={list(self.cache)} support_size={len(self.support)}'
+        #     )
+
+        self.timestamp += 1
+        return hit
+
+
+class PredictiveOnlineMinAlgorithm(OnlineMinAlgorithm):
+    """PredictiveOnlineMin: OnlineMin with predictor-driven eviction on L0 misses.
+
+    Behavior:
+    - Same layer/support maintenance as `OnlineMinAlgorithm`.
+    - On a cache miss for a page in L0 (i.e. not currently in support) AND the
+      cache is full, use the provided `predictor` + `evictor` to choose which
+      cache slot to evict.
+    - Otherwise, fall back to OnlineMin's eviction rule.
+
+    This class uses the same predictor interface as `PredictAlgorithm` so it can
+    be constructed via `PredictAlgorithmFactory.generate_predictive_algorithm`.
+    """
+
+    def __init__(
+        self,
+        associativity: int,
+        evictor_type: Union[Type[Evictor], partial],
+        predictor_type: Union[Predictor, partial],
+        max_support_factor: int = 3,
+    ) -> None:
+        super().__init__(associativity=associativity, max_support_factor=max_support_factor)
+
+        self.timestamp = 0
+
+        cls_type = predictor_type.func if hasattr(predictor_type, 'func') else predictor_type
+        if issubclass(cls_type, ReuseDistancePredictor):
+            self.preds = [np.inf] * associativity
+        elif issubclass(cls_type, BinaryPredictor):
+            self.preds = [0] * associativity
+        elif issubclass(cls_type, PhasePredictor):
+            self.preds = [1] * associativity
+        elif issubclass(cls_type, StatePredictor):
+            self.preds = [None] * associativity
+        else:
+            self.preds = None
+
+        if issubclass(cls_type, OraclePredictor):
+            def oracle_access(self, pc, address, next_access_time):
+                self.predictor.oracle_access(pc, address, next_access_time)
+            self.oracle_access = types.MethodType(oracle_access, self)
+
+        self.evictor = evictor_type()
+        self.predictor = predictor_type()
+
+    def snapshot(self):
+        return (list(zip(self.cache, self.pcs)), self.preds)
+
+    def before_pred(self, pc, address):
+        preds = self.predictor.refresh_scores(self.timestamp, pc, address, self.snapshot()[0])
+        if preds is not None:
+            self.preds = preds
+
+    def after_pred(self, pc, address, target_index):
+        pred = self.predictor.predict_score(self.timestamp, pc, address, self.snapshot()[0])
+        if pred is not None and self.preds is not None:
+            self.preds[target_index] = pred
+        self.timestamp += 1
+
+    def access(self, pc, address) -> bool:
+        # Keep predictor state up to date.
+        self.before_pred(pc, address)
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        # OnlineMin proper, with predictor-driven eviction on L0 misses.
+        # Cache must always be a subset of support (OnlineMin invariant). If this
+        # is violated (e.g. due to an unintended interaction with forgiveness),
+        # fail fast with a clear error instead of crashing with KeyError later.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveOnlineMin invariant violated: cache contains non-support pages (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+
+        support_size = len(self.support)
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and support_size == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                # L0 miss and cache full: consult predictor for victim choice.
+                # IMPORTANT: do NOT override OnlineMin's eviction rule during the
+                # forgiveness case (support at cap). OnlineMin relies on a
+                # specific eviction+layer-update interaction; picking an
+                # arbitrary victim can leave cache pages outside the support.
+                if layer_i == 0 and (not forgiveness) and self.preds is not None:
+                #if layer_i == 0 and self.preds is not None:
+                    victim_idx = self.evictor.evict(list(enumerate(self.preds)))
+                else:
+                    cache_pages = [p for p in self.cache if p is not None]
+                    if eviction_layer == 0:
+                        victim = min(cache_pages, key=lambda p: self.priority[p])
+                    else:
+                        cache_pages.sort(key=lambda p: self.layer_of[p])
+                        j = None
+                        for jj in range(eviction_layer, self.k + 1):
+                            if self.layer_of[cache_pages[jj - 1]] == jj:
+                                j = jj
+                                break
+                        if j is None:
+                            victim = min(cache_pages, key=lambda p: self.priority[p])
+                        else:
+                            victim = min(cache_pages[:j], key=lambda p: self.priority[p])
+                    victim_idx = self.cache.index(victim)
+
+                target_index = victim_idx
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+
+        # Update layers after cache update (as in OnlineMin).
+        self._update_layers_after_request(address, layer_i, forgiveness)
+
+        # Invariant: cache must be subset of support.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveOnlineMin invariant violated: cache contains non-support pages. '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        # Update predictor score for the accessed/inserted slot.
+        if target_index is None:
+            # Should never happen, but keep safe.
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
+
+class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
+    """RPB-OnlineMin with an iterated unrevealed-support budget rule.
+
+    As in `PredictiveRPBNewOnlineMinAlgorithm`, an L0 miss resets a prediction
+    budget and non-L0 misses can spend it to use predictor eviction. This
+    variant records Y as the total support size just before an L0-miss
+    eviction. On each later non-L0 miss, Y' is the number of support pages in
+    unrevealed layers; if Y' <= Y / e - 1, it earns one additional budget and
+    sets Y = Y' for the next comparison.
+    """
+
+    def __init__(
+        self,
+        associativity: int,
+        evictor_type: Union[Type[Evictor], partial],
+        predictor_type: Union[Predictor, partial],
+        max_support_factor: int = 3,
+        pred_budget: int = 0,
+    ) -> None:
+        super().__init__(associativity=associativity, max_support_factor=max_support_factor)
+
+        self.timestamp = 0
+
+        cls_type = predictor_type.func if hasattr(predictor_type, 'func') else predictor_type
+        if issubclass(cls_type, ReuseDistancePredictor):
+            self.preds = [np.inf] * associativity
+        elif issubclass(cls_type, BinaryPredictor):
+            self.preds = [0] * associativity
+        elif issubclass(cls_type, PhasePredictor):
+            self.preds = [1] * associativity
+        elif issubclass(cls_type, StatePredictor):
+            self.preds = [None] * associativity
+        else:
+            self.preds = None
+
+        if issubclass(cls_type, OraclePredictor):
+            def oracle_access(self, pc, address, next_access_time):
+                self.predictor.oracle_access(pc, address, next_access_time)
+            self.oracle_access = types.MethodType(oracle_access, self)
+
+        self.evictor = evictor_type()
+        self.predictor = predictor_type()
+
+        # Prediction budget for non-L0 predictor use.
+        self.pred_budget_init = int(pred_budget)
+        self.pred_budget = self.pred_budget_init
+
+        # Threshold baseline: total support size on L0 eviction, then updated to
+        # the unrevealed-support size whenever a non-L0 miss releases budget.
+        self.rpb_y: Optional[int] = None
+
+    def snapshot(self):
+        return (list(zip(self.cache, self.pcs)), self.preds)
+
+    def before_pred(self, pc, address):
+        preds = self.predictor.refresh_scores(self.timestamp, pc, address, self.snapshot()[0])
+        if preds is not None:
+            self.preds = preds
+
+    def after_pred(self, pc, address, target_index):
+        pred = self.predictor.predict_score(self.timestamp, pc, address, self.snapshot()[0])
+        if pred is not None and self.preds is not None:
+            self.preds[target_index] = pred
+        self.timestamp += 1
+
+    def _onlinemin_eviction_candidate_pages(self, eviction_layer: int) -> List[object]:
+        cache_pages = [p for p in self.cache if p is not None]
+        if not cache_pages:
+            return []
+        if eviction_layer == 0:
+            return cache_pages
+
+        cache_pages.sort(key=lambda p: self.layer_of[p])
+        j = None
+        for jj in range(eviction_layer, self.k + 1):
+            if self.layer_of[cache_pages[jj - 1]] == jj:
+                j = jj
+                break
+        if j is None:
+            # Should not happen; treat as full set.
+            return cache_pages
+        return cache_pages[:j]
+
+    def _num_of_unrevealed_support_pages(self) -> int:
+        revealed_pages = 0
+        for jj in range(self.k, 0, -1):
+            if len(self.layers[jj]) != 1:
+                break
+            revealed_pages += 1
+        return len(self.support) - revealed_pages
+    
+    def _num_of_revealed_layers(self) -> int:
+        n = 0
+        for jj in range(self.k, 0, -1):
+            if len(self.layers[jj]) == 1:
+                n += 1
+            else:
+                break
+        return n
+
+    def _onlinemin_eviction_candidate_indices(self, eviction_layer: int) -> List[int]:
+        return [self.cache.index(p) for p in self._onlinemin_eviction_candidate_pages(eviction_layer)]
+
+    def _onlinemin_victim_idx(self, eviction_layer: int) -> int:
+        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+        if not candidate_pages:
+            return 0
+        victim = min(candidate_pages, key=lambda p: self.priority[p])
+        return self.cache.index(victim)
+
+    def access(self, pc, address) -> bool:
+        # Keep predictor state up to date.
+        self.before_pred(pc, address)
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        # Invariant: cache must always be a subset of support.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMin invariant violated: cache contains non-support pages (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                # Never override OnlineMin during forgiveness.
+                if forgiveness:
+                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                    target_index = victim_idx
+                    self.cache[target_index] = address
+                    self.pcs[target_index] = pc
+                else:
+                    use_predictor = False
+                    if self.preds is not None:
+                        if layer_i == 0:
+                            # True L0 miss: always predictor-evict.
+                            use_predictor = True
+                            self.pred_budget = self.pred_budget_init
+                        else:
+                            y_prime = self.k - self._num_of_revealed_layers()
+                            if self.rpb_y is not None and y_prime <= (self.rpb_y + 2) / 2.718 - 2:
+                                self.pred_budget += 1
+
+                            if self.pred_budget >= 1:
+                                use_predictor = True
+                                self.pred_budget -= 1
+
+                    if use_predictor:
+                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
+                        if not candidate_indices:
+                            candidate_indices = list(range(self.k))
+
+                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
+                        victim_idx = self.evictor.evict(scored_candidates)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+                    else:
+                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+
+        # Update layers after cache update (as in OnlineMin).
+        self._update_layers_after_request(address, layer_i, forgiveness)
+        self.rpb_y = self.k - self._num_of_revealed_layers()
+
+        # Invariant: cache must be subset of support.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMin invariant violated: cache contains non-support pages. '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        # Update predictor score for the accessed/inserted slot.
+        if target_index is None:
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
+
+class PredictiveRPBNewOnlineMinAlgorithm(OnlineMinAlgorithm):
+    """RPB-OnlineMin: OnlineMin with conditional predictor eviction.
+
+    Similar to `PredictiveOnlineMinAlgorithm`, but with RPB gating and
+    bookkeeping:
+    - On a true L0 miss (layer_i==0 and not forgiveness) with cache full, evict
+      using the predictor within OnlineMin's current eviction candidate set.
+      Let the evicted page be x. Record:
+        Y(x) = #{p in candidates : last_access_time[p] < now}
+        T(x) = now
+    - On forgiveness (support at cap), always use OnlineMin's eviction rule.
+    - On other misses that require eviction (non-L0 and not forgiveness), for
+      the requested page x': if x' was previously evicted via predictor (i.e.
+      we have recorded Y(x'), T(x')) then compute
+        Z = #{p in current candidates : last_access_time[p] < T(x')}
+      If Z < Y(x')/2, use predictor eviction within candidates; otherwise fall
+      back to OnlineMin eviction.
+    """
+
+    def __init__(
+        self,
+        associativity: int,
+        evictor_type: Union[Type[Evictor], partial],
+        predictor_type: Union[Predictor, partial],
+        max_support_factor: int = 3,
+        pred_budget: int = 0,
+    ) -> None:
+        super().__init__(associativity=associativity, max_support_factor=max_support_factor)
+
+        self.timestamp = 0
+
+        cls_type = predictor_type.func if hasattr(predictor_type, 'func') else predictor_type
+        if issubclass(cls_type, ReuseDistancePredictor):
+            self.preds = [np.inf] * associativity
+        elif issubclass(cls_type, BinaryPredictor):
+            self.preds = [0] * associativity
+        elif issubclass(cls_type, PhasePredictor):
+            self.preds = [1] * associativity
+        elif issubclass(cls_type, StatePredictor):
+            self.preds = [None] * associativity
+        else:
+            self.preds = None
+
+        if issubclass(cls_type, OraclePredictor):
+            def oracle_access(self, pc, address, next_access_time):
+                self.predictor.oracle_access(pc, address, next_access_time)
+            self.oracle_access = types.MethodType(oracle_access, self)
+
+        self.evictor = evictor_type()
+        self.predictor = predictor_type()
+
+        # Last access time for pages that have appeared in cache.
+        self.last_access_time: Dict[object, int] = {}
+
+        # RPB bookkeeping for pages evicted via predictor-driven eviction.
+        self._rpb_y: Dict[object, int] = {}
+        self._rpb_t: Dict[object, int] = {}
+
+        # Prediction budget for non-L0 predictor use.
+        self.pred_budget_init = int(pred_budget)
+        self.pred_budget = self.pred_budget_init
+
+        # Previous candidate-set size used by the budget update rule.
+        self.prev_can_size = self.k
+
+    def snapshot(self):
+        return (list(zip(self.cache, self.pcs)), self.preds)
+
+    def before_pred(self, pc, address):
+        preds = self.predictor.refresh_scores(self.timestamp, pc, address, self.snapshot()[0])
+        if preds is not None:
+            self.preds = preds
+
+    def after_pred(self, pc, address, target_index):
+        pred = self.predictor.predict_score(self.timestamp, pc, address, self.snapshot()[0])
+        if pred is not None and self.preds is not None:
+            self.preds[target_index] = pred
+        self.timestamp += 1
+
+    def _onlinemin_eviction_candidate_pages(self, eviction_layer: int) -> List[object]:
+        cache_pages = [p for p in self.cache if p is not None]
+        if not cache_pages:
+            return []
+        if eviction_layer == 0:
+            return cache_pages
+
+        cache_pages.sort(key=lambda p: self.layer_of[p])
+        j = None
+        for jj in range(eviction_layer, self.k + 1):
+            if self.layer_of[cache_pages[jj - 1]] == jj:
+                j = jj
+                break
+        if j is None:
+            # Should not happen; treat as full set.
+            return cache_pages
+        return cache_pages[:j]
+
+    def _num_of_revealed_layrs(self) -> int:
+        n = 0
+        for jj in range(self.k, 0, -1):
+            if len(self.layers[jj]) == 1:
+                n += 1
+            else:
+                break
+        return n
+
+    def _onlinemin_eviction_candidate_indices(self, eviction_layer: int) -> List[int]:
+        return [self.cache.index(p) for p in self._onlinemin_eviction_candidate_pages(eviction_layer)]
+
+    def _onlinemin_victim_idx(self, eviction_layer: int) -> int:
+        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+        if not candidate_pages:
+            return 0
+        victim = min(candidate_pages, key=lambda p: self.priority[p])
+        return self.cache.index(victim)
+
+    def access(self, pc, address) -> bool:
+        # Keep predictor state up to date.
+        self.before_pred(pc, address)
+
+        ts = self.timestamp
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            self.last_access_time[address] = ts
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        # Invariant: cache must always be a subset of support.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMin invariant violated: cache contains non-support pages (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+
+        support_size = len(self.support)
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and support_size == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                # Never override OnlineMin during forgiveness.
+                if forgiveness:
+                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                    target_index = victim_idx
+                    self.cache[target_index] = address
+                    self.pcs[target_index] = pc
+                else:
+                    use_predictor = False
+                    if self.preds is not None:
+                        if layer_i == 0:
+                            # True L0 miss: always predictor-evict.
+                            use_predictor = True
+                            self.pred_budget = self.pred_budget_init
+                            self._rpb_y.clear()
+                            self._rpb_t.clear()
+                        else:
+                            # Non-L0 miss: gate on recorded Y/T for this page.
+                            # if address in self._rpb_y and address in self._rpb_t:
+                            #     y_prev = self._rpb_y[address]
+                            #     t_prev = self._rpb_t[address]
+                            #     candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                            #     z = sum(1 for p in candidate_pages if self.last_access_time.get(p, -1) < t_prev)
+                            #     use_predictor = (2 * z < y_prev)
+                            
+                            candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                            if len(candidate_pages) <= self.prev_can_size / 2.718 - 1:
+                                self.pred_budget += 1
+                            
+                            if self.pred_budget >= 1:
+                                use_predictor = True
+                                self.pred_budget -= 1
+
+                    if use_predictor:
+                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
+                        if not candidate_indices:
+                            candidate_indices = list(range(self.k))
+
+                        #y_now = sum(1 for p in candidate_pages if self.last_access_time.get(p, -1) < ts)
+                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
+                        victim_idx = self.evictor.evict(scored_candidates)
+                        #victim_page = self.cache[victim_idx]
+                        #if victim_page is not None:
+                        #    self._rpb_y[victim_page] = int(y_now)
+                        #    self._rpb_t[victim_page] = int(ts)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+                    else:
+                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+
+        # Update layers after cache update (as in OnlineMin).
+        self._update_layers_after_request(address, layer_i, forgiveness)
+        self.prev_can_size = self.k - self._num_of_revealed_layrs()
+
+        # Invariant: cache must be subset of support.
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMin invariant violated: cache contains non-support pages. '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        # Record last access time for the accessed/inserted page.
+        self.last_access_time[address] = ts
+
+        # Update predictor score for the accessed/inserted slot.
+        if target_index is None:
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
+class RDMAlgorithm(EvictAlgorithm):
+    """RDM (Recency Duration Mix) plugged into the OnOPT priority framework.
+
+    From Moruz & Negoescu:
+    - Maintain the offset-function layer partition L0..Lk and apply the
+      standard update rule after each request.
+    - Eviction policy (OnOPT):
+        * If requested page p ∈ L0 on a miss: evict the cached page with the
+          smallest priority.
+        * If p ∈ Li (i>0) on a miss: find the smallest j ≥ i such that the cache
+          contains exactly j pages from L1 ∪ ... ∪ Lj, then evict (among those j
+          cached pages) the one with smallest priority.
+    - Priority assignment uses a global counter t which increments only on
+      requests to non-revealed pages. For each page p in the support we store
+      t0(p) (time when p entered support, i.e. when requested from L0).
+      Upon each request to p, set:
+        priority(p) = 0.8*t + 0.1*(t - t0(p))
+
+    Practical note: the exact OnOPT framework can have support size growing with
+    the number of distinct pages. For this simulator we provide an optional
+    forgiveness-style cap similar to OnlineMin via max_support_factor.
+    """
+
+    def __init__(self, associativity: int, max_support_factor: int = 3):
+        super().__init__(associativity)
+        self.k = associativity
+        if max_support_factor < 1:
+            raise ValueError('RDM: max_support_factor must be >= 1')
+        self.max_support_factor = int(max_support_factor)
+        self.max_support = self.max_support_factor * self.k
+
+        # Layers for the offset-function representation: index 1..k used;
+        # index 0 unused (L0 tracked implicitly as "not in support").
+        self.layers = [set() for _ in range(self.k + 1)]
+        self.support = set()
+        self.layer_of = {}
+
+        # RDM priority state.
+        self.t = 0
+        self.t0 = {}        # page -> entry time into support
+        self.priority = {}  # page -> float
+
+        # Warm-up: maintain recency order until cache becomes full.
+        self._inited = False
+        self._warmup_lru = []  # oldest -> newest
+
+    def _priority_key(self, page):
+        # Stable tie-break to keep behavior deterministic.
+        return (self.priority.get(page, float('-inf')), page)
+
+    def _rebuild_layer_of(self):
+        new_layer_of = {}
+        new_support = set()
+        for i in range(1, self.k + 1):
+            for p in self.layers[i]:
+                new_layer_of[p] = i
+                new_support.add(p)
+
+        # Drop state for pages that leave the support (only possible with
+        # forgiveness/capping).
+        for p in list(self.priority.keys()):
+            if p not in new_support:
+                self.priority.pop(p, None)
+                self.t0.pop(p, None)
+
+        self.layer_of = new_layer_of
+        self.support = new_support
+
+    def _init_layers_from_warmup(self):
+        pages = [p for p in self._warmup_lru if p is not None]
+        if len(pages) < self.k:
+            return
+        pages = pages[-self.k:]
+        self.layers = [set() for _ in range(self.k + 1)]
+        for i, p in enumerate(pages, start=1):
+            self.layers[i] = {p}
+            self.t0[p] = 0
+            self.priority[p] = 0.0
+        self._rebuild_layer_of()
+        self._inited = True
+
+    def _revealed_pages(self):
+        # r = smallest index such that L_r..L_k are all singletons.
+        r = self.k + 1
+        suffix_singletons = True
+        for i in range(self.k, 0, -1):
+            if suffix_singletons and len(self.layers[i]) == 1:
+                r = i
+            else:
+                suffix_singletons = False
+        if r > self.k:
+            return set()
+        revealed = set()
+        for i in range(r, self.k + 1):
+            revealed |= self.layers[i]
+        return revealed
+
+    def _assign_priority_on_request(self, page, layer_i: int, revealed: bool):
+        # Increment t only on requests to non-revealed pages.
+        if not revealed:
+            self.t += 1
+
+        # On requests from L0, define entry time into support.
+        if layer_i == 0:
+            self.t0[page] = self.t
+
+        if page not in self.t0:
+            # Shouldn't happen unless warm-up/forgiveness removed state.
+            self.t0[page] = self.t
+
+        # priority(p) = 0.8*t + 0.1*(t - t0(p))
+        self.priority[page] = 0.8 * self.t + 0.1 * (self.t - self.t0[page])
+
+    def _update_layers_after_request(self, page, layer_i: int, forgiveness: bool):
+        # Offset-function layer update (Section 2.1), plus an optional
+        # forgiveness-style cap to keep support bounded.
+        if layer_i == 0:
+            if not forgiveness:
+                if self.k >= 2:
+                    self.layers[self.k - 1] |= self.layers[self.k]
+                self.layers[self.k] = {page}
+            else:
+                # Bounded-support variant: drop the oldest unrevealed layer.
+                dropped = self.layers[1]
+                for q in dropped:
+                    self.priority.pop(q, None)
+                    self.t0.pop(q, None)
+                for j in range(1, self.k):
+                    self.layers[j] = self.layers[j + 1]
+                self.layers[self.k] = {page}
+        else:
+            i = layer_i
+            if i < self.k:
+                self.layers[i - 1] |= (self.layers[i] - {page})
+                for j in range(i, self.k):
+                    self.layers[j] = self.layers[j + 1]
+                self.layers[self.k] = {page}
+            else:
+                self.layers[self.k] = {page}
+
+        self._rebuild_layer_of()
+
+        if len(self.support) > self.max_support:
+            raise RuntimeError(
+                'RDM invariant violated: support size exceeded cap. '
+                f'support_size={len(self.support)} max_support={self.max_support}'
+            )
+
+    def access(self, pc, address) -> bool:
+        # Warm-up phase: behave like a simple LRU fill until full, then init.
+        if not self._inited:
+            if address in self.cache:
+                hit = True
+                idx = self.cache.index(address)
+                self.pcs[idx] = pc
+                if address in self._warmup_lru:
+                    self._warmup_lru.remove(address)
+                self._warmup_lru.append(address)
+                return hit
+
+            hit = False
+            if None in self.cache:
+                idx = self.cache.index(None)
+                self.cache[idx] = address
+                self.pcs[idx] = pc
+                if address in self._warmup_lru:
+                    self._warmup_lru.remove(address)
+                self._warmup_lru.append(address)
+                if None not in self.cache:
+                    self._init_layers_from_warmup()
+                return hit
+
+            if not self._warmup_lru:
+                self._warmup_lru = [p for p in self.cache if p is not None]
+            self._init_layers_from_warmup()
+
+        # RDM proper.
+        revealed = self._revealed_pages()
+        is_revealed = address in revealed
+
+        hit = address in self.cache
+        if hit:
+            idx = self.cache.index(address)
+            self.pcs[idx] = pc
+
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        if not hit:
+            if None in self.cache:
+                idx = self.cache.index(None)
+                self.cache[idx] = address
+                self.pcs[idx] = pc
+            else:
+                cache_pages = [p for p in self.cache if p is not None]
+                if eviction_layer == 0:
+                    victim = min(cache_pages, key=self._priority_key)
+                else:
+                    cache_pages.sort(key=lambda p: self.layer_of[p])
+                    j = None
+                    for jj in range(eviction_layer, self.k + 1):
+                        if self.layer_of[cache_pages[jj - 1]] == jj:
+                            j = jj
+                            break
+                    if j is None:
+                        victim = min(cache_pages, key=self._priority_key)
+                    else:
+                        victim = min(cache_pages[:j], key=self._priority_key)
+
+                victim_idx = self.cache.index(victim)
+                self.cache[victim_idx] = address
+                self.pcs[victim_idx] = pc
+
+        # Priority assignment happens on each request.
+        self._assign_priority_on_request(address, layer_i, is_revealed)
+
+        # Update layers after cache update.
+        self._update_layers_after_request(address, layer_i, forgiveness)
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'RDM invariant violated: cache contains non-support pages. '
+                f'addr={address} hit={hit} layer_i={layer_i} revealed={is_revealed} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        return hit
+
 ####################################################################
 
 class PredictAlgorithmFactory:
@@ -994,7 +2388,7 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
     this_cls = callable
     if hasattr(callable, 'func'):
         this_cls = callable.func
-    this_cls_name = this_cls.__name__.replace("Algorithm", '').replace("CombineDeterministic", 'CombDet').replace('CombineRandomAlgorithm', 'CombRand').replace("MarkAndPredict", "Mark&Predict").replace('PredictiveMarker', 'PredMark')
+    this_cls_name = this_cls.__name__.replace("Algorithm", '').replace("CombineDeterministic", 'CombDet').replace('CombineRandomAlgorithm', 'CombRand').replace("MarkAndPredict", "Mark&Predict").replace('PredictiveMarker', 'PredMark').replace('PredictiveRPBOnlineMin', 'RPB-OnlineMin').replace('PredictiveRPBNewOnline', 'RPB-new-Online').replace('PredictiveRPBNewRDM', 'RPB-new-RDM')
     metadata = this_cls_name
     if hasattr(callable, 'keywords'):
         kw = callable.keywords
@@ -1036,5 +2430,16 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
             if 'relax_prob' in kw:
                 relax_prob = kw['relax_prob']
             metadata += format_guard(relax_times, relax_prob)
-            
+
+        if issubclass(this_cls, OnlineMinAlgorithm):
+            if 'max_support_factor' in kw:
+                metadata += f"-msf-{kw['max_support_factor']}"
+
+        if issubclass(this_cls, (PredictiveRPBOnlineMinAlgorithm, PredictiveRPBNewOnlineMinAlgorithm)):
+            metadata += f"-pb-{kw.get('pred_budget', 0)}"
+
+        if issubclass(this_cls, RDMAlgorithm):
+            if 'max_support_factor' in kw:
+                metadata += f"-msf-{kw['max_support_factor']}"
+
     return metadata
