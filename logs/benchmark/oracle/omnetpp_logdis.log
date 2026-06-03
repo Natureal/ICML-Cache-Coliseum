@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/pchen/Experiments/ICML-Cache-Coliseum/benchmark/__main__.py", line 1, in <module>
+    from data_trace.data_trace import DataTrace
+  File "/Users/pchen/Experiments/ICML-Cache-Coliseum/data_trace/data_trace.py", line 23, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
