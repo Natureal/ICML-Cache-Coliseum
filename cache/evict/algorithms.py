@@ -7,6 +7,7 @@ import numpy as np
 import types
 import copy
 import random
+import math
 
 class EvictAlgorithm(ABC):
     """Evict an entry from one cache line
@@ -1592,7 +1593,7 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
                             self.pred_budget = self.pred_budget_init
                         else:
                             y_prime = self.k - self._num_of_revealed_layers()
-                            if self.rpb_y is not None and y_prime <= (self.rpb_y + 2) / 2.718 - 2:
+                            if self.rpb_y is not None and y_prime < (self.rpb_y) / math.e - 2:
                                 self.pred_budget += 1
 
                             if self.pred_budget >= 1:

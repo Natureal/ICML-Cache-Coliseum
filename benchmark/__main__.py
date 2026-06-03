@@ -270,7 +270,7 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'Parrot', shared_model=parrot_gen()),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'Parrot', shared_model=parrot_gen()),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'Parrot', shared_model=parrot_gen()),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=3, max_support_factor=100), 'Parrot', shared_model=parrot_gen()),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'Parrot', shared_model=parrot_gen()),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'Parrot', shared_model=parrot_gen()), LRUAlgorithm]),
@@ -295,7 +295,9 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=3, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), LRUAlgorithm]),
@@ -318,7 +320,9 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=3, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), LRUAlgorithm]),
@@ -333,8 +337,6 @@ if __name__ == "__main__":
             online_types.extend([
                 PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO-Bin', threshold=0.5),
                 PredictAlgorithmFactory.generate_predictive_algorithm(Mark0, 'PLECO-Bin', threshold=0.5),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'PLECO-Bin', threshold=0.5),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'PLECO-Bin', threshold=0.5),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO-Bin', threshold=0.5), LRUAlgorithm]),
@@ -349,8 +351,6 @@ if __name__ == "__main__":
             online_types.extend([
                 PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'GBM', shared_model=gbm_gen()),
                 PredictAlgorithmFactory.generate_predictive_algorithm(Mark0, 'GBM', shared_model=gbm_gen()),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=0, relax_prob=0), 'GBM', shared_model=gbm_gen()),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(Guard, follow_if_guarded=False, relax_times=5, relax_prob=0), 'GBM', shared_model=gbm_gen()),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'GBM', shared_model=gbm_gen()), LRUAlgorithm]),
@@ -369,7 +369,7 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'LRB', shared_model=lrb_gen(), memory_window=args.memory_window),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'LRB', shared_model=lrb_gen(), memory_window=args.memory_window),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'LRB', shared_model=lrb_gen(), memory_window=args.memory_window),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=3, max_support_factor=100), 'LRB', shared_model=lrb_gen(), memory_window=args.memory_window),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'LRB', shared_model=lrb_gen(), memory_window=args.memory_window),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'LRB', shared_model=lrb_gen(), memory_window=args.memory_window), LRUAlgorithm]),
@@ -415,7 +415,14 @@ if __name__ == "__main__":
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'OracleDis'),
-                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=3, max_support_factor=100), 'OracleDis')
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=5, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=10, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=20, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=50, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=100, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=200, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=500, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1000, max_support_factor=100), 'OracleDis'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleDis'), LRUAlgorithm]),
@@ -432,7 +439,7 @@ if __name__ == "__main__":
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'OracleBin'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'OracleBin'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'OracleBin'),
-                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=3, max_support_factor=100), 'OracleBin')
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'OracleBin')
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [(PredictAlgorithm, 'OracleBin'), LRUAlgorithm]),

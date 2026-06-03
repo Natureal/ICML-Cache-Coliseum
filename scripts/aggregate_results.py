@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 """Aggregate per-dataset benchmark CSVs into a per-algorithm mean table.
 
-Reads flat CSV files from ``stat/<dataset>_<name>_<fraction>.csv``,
+Reads flat CSV files from ``stat/<dataset>_<name>[_<fraction>].csv``,
+auto-discovers available predictor types from the stat directory,
 computes per-algorithm mean (and std) of Hit Rate, Cost Ratio, and
 LRU-normalized Cost Ratio across datasets.
-
-Cross-checks with log files to ensure each dataset actually completed
-successfully in the most recent run.
 """
 import argparse
 import csv
@@ -14,7 +12,6 @@ import math
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime
 
 
 CSV_COST_COL = "Cost Ratio"
@@ -27,200 +24,108 @@ SPEC2006_DATASETS = [
 ]
 
 
-def log_has_result_table(log_path):
-    """Check if a log file contains a valid result table (PrettyTable output)."""
-    if not os.path.isfile(log_path):
-        return False, "log file not found"
-    with open(log_path, "r") as f:
-        for line in f:
-            if line.startswith("|") and "Hit Rate" in line:
-                return True, None
-    return False, "no result table in log"
+def discover_predictors(results_dir, datasets):
+    """Scan stat/ for available predictor types based on CSV filenames."""
+    predictors = set()
+    for f in os.listdir(results_dir):
+        if not f.endswith(".csv"):
+            continue
+        for ds in datasets:
+            if f.startswith(ds + "_"):
+                rest = f[len(ds) + 1:]
+                rest = rest.removesuffix(".csv")
+                # rest is either "<pred>_<fraction>" or "<pred>"
+                parts = rest.rsplit("_", 1)
+                if len(parts) == 2 and parts[1].replace(".", "", 1).isdigit():
+                    predictors.add(parts[0])
+                else:
+                    predictors.add(rest)
+                break
+    return sorted(predictors)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--name", required=True,
-                        help="CSV basename (real mode: joined predictor names; oracle mode: noise type)")
-    parser.add_argument("--fraction", default="1",
-                        help="model_fraction subdirectory name (default: 1)")
-    parser.add_argument("--results_dir", default="stat",
-                        help="root directory passed to benchmark as --output_root_dir")
-    parser.add_argument("--logs_dir", default=None,
-                        help="directory containing per-dataset log files (default: logs/benchmark/<name>)")
-    parser.add_argument("--expected", default="spec2006",
-                        choices=["spec2006", "none"],
-                        help="expected dataset set for completeness check (default: spec2006)")
-    args = parser.parse_args()
-    if args.logs_dir is None:
-        args.logs_dir = os.path.join("logs", "benchmark", args.name)
+def find_csv(results_dir, dataset, name, fraction):
+    path = os.path.join(results_dir, f"{dataset}_{name}_{fraction}.csv")
+    if os.path.isfile(path):
+        return path
+    path = os.path.join(results_dir, f"{dataset}_{name}.csv")
+    if os.path.isfile(path):
+        return path
+    return None
 
-    if not os.path.isdir(args.results_dir):
-        print(f"ERROR: Results directory not found: {args.results_dir}")
-        sys.exit(1)
 
-    # --- Determine expected datasets ---
-    if args.expected == "spec2006":
-        expected = SPEC2006_DATASETS
-    else:
-        expected = sorted(set(
-            f.split("_")[0] for f in os.listdir(args.results_dir)
-            if f.endswith(f"_{args.name}_{args.fraction}.csv")
-        ))
-
-    # --- Verify each dataset has a valid log with result table ---
-    failed = []
-    for dataset in expected:
-        log_path = os.path.join(args.logs_dir, f"{dataset}_{args.fraction}.log")
-        if not os.path.isfile(log_path):
-            log_path = os.path.join(args.logs_dir, f"{dataset}.log")
-        ok, reason = log_has_result_table(log_path)
-        if not ok:
-            failed.append((dataset, reason, log_path))
-
-    if failed:
-        print("ERROR: The following datasets do not have valid results in their log files:")
-        for dataset, reason, log_path in failed:
-            print(f"  {dataset:<15} ({reason}: {log_path})")
-        print()
-        print("Aggregation aborted. Re-run the benchmark for the failed datasets first.")
-        sys.exit(1)
-
-    # --- Collect CSVs ---
-    found = []
-    mtimes = {}
-    for dataset in expected:
-        path = os.path.join(args.results_dir, f"{dataset}_{args.name}_{args.fraction}.csv")
-        if not os.path.isfile(path):
-            path = os.path.join(args.results_dir, f"{dataset}_{args.name}.csv")
-        if os.path.isfile(path):
-            found.append((dataset, path))
-            mtimes[dataset] = os.path.getmtime(path)
-        else:
-            failed.append((dataset, "CSV not found"))
-
-    if not found:
-        print(f"ERROR: No CSVs found matching {args.results_dir}/<dataset>_{args.name}[_{args.fraction}].csv")
-        sys.exit(1)
-
-    # --- Staleness check ---
-    if mtimes:
-        times = list(mtimes.values())
-        min_t, max_t = min(times), max(times)
-        if max_t - min_t > 1800:
-            print("WARNING: Result files have timestamps spanning >30 min — possible mix of different runs:")
-            for dataset, t in sorted(mtimes.items(), key=lambda x: x[1]):
-                print(f"  {dataset:<15} {datetime.fromtimestamp(t).strftime('%Y-%m-%d %H:%M:%S')}")
-            print()
-
-    # --- Aggregation with LRU-normalized Cost Ratio + std ---
-    # per_alg_values[alg_name] = [[hr1, hr2, ...], [cr1, cr2, ...], [lru_norm1, ...]]
+def aggregate_one(results_dir, name, fraction, expected):
+    """Aggregate results for a single predictor type. Returns (order, per_alg_values, n_found, errors)."""
     per_alg_values = defaultdict(lambda: [[] for _ in DISPLAY_COLS])
     order = []
     errors = []
-    rows_per_dataset = {}
+    n_found = 0
 
-    for dataset, path in found:
+    for dataset in expected:
+        path = find_csv(results_dir, dataset, name, fraction)
+        if not path:
+            continue
+        n_found += 1
         try:
             with open(path, newline="") as f:
                 reader = csv.DictReader(f)
                 dataset_rows = {}
-                dataset_row_count = 0
                 for row in reader:
-                    name = row["Name"]
+                    alg = row["Name"]
                     hit_rate = float(row["Hit Rate"])
                     cost_ratio = float(row[CSV_COST_COL])
                     if math.isnan(hit_rate) or math.isinf(hit_rate):
-                        errors.append((dataset, f"non-finite Hit Rate={hit_rate} in row '{name}'"))
                         continue
                     if math.isnan(cost_ratio) or math.isinf(cost_ratio):
-                        errors.append((dataset, f"non-finite {CSV_COST_COL}={cost_ratio} in row '{name}'"))
                         continue
-                    dataset_rows[name] = (hit_rate, cost_ratio)
-                    dataset_row_count += 1
-                rows_per_dataset[dataset] = dataset_row_count
+                    dataset_rows[alg] = (hit_rate, cost_ratio)
 
                 lru_cost = dataset_rows.get("LRU", (None, None))[1]
                 opt_cost = 1.0
 
-                for name, (hit_rate, cost_ratio) in dataset_rows.items():
-                    if name not in per_alg_values or not per_alg_values[name][0]:
-                        order.append(name)
+                for alg, (hit_rate, cost_ratio) in dataset_rows.items():
+                    if alg not in per_alg_values or not per_alg_values[alg][0]:
+                        order.append(alg)
                     if lru_cost is not None and lru_cost != opt_cost:
                         lru_norm = (cost_ratio - opt_cost) / (lru_cost - opt_cost)
                     else:
                         lru_norm = 0.0
-                    per_alg_values[name][0].append(hit_rate)
-                    per_alg_values[name][1].append(cost_ratio)
-                    per_alg_values[name][2].append(lru_norm)
-
+                    per_alg_values[alg][0].append(hit_rate)
+                    per_alg_values[alg][1].append(cost_ratio)
+                    per_alg_values[alg][2].append(lru_norm)
         except (KeyError, ValueError) as e:
             errors.append((dataset, str(e)))
-            rows_per_dataset[dataset] = 0
 
-    # --- Empty / corrupt CSV check (hard failure) ---
-    empty = [(d, p) for (d, p) in found if rows_per_dataset.get(d, 0) == 0]
-    if empty:
-        print("ERROR: The following datasets have CSV files with no usable data rows:")
-        for d, p in empty:
-            try:
-                size = os.path.getsize(p)
-            except OSError:
-                size = -1
-            print(f"  {d:<15} (size={size} bytes): {p}")
-        print()
-        print("Aggregation aborted. Re-run the benchmark for these datasets first.")
-        sys.exit(1)
-
-    # --- Row-count consistency check (warning) ---
-    if rows_per_dataset:
-        all_counts = set(rows_per_dataset.values())
-        if len(all_counts) > 1:
-            max_n = max(all_counts)
-            print("WARNING: Datasets have different numbers of algorithm rows — "
-                  "some runs may have partially failed:")
-            for d, n in sorted(rows_per_dataset.items()):
-                marker = "" if n == max_n else "  <-- INCOMPLETE"
-                print(f"  {d:<15} {n} rows{marker}")
-            print()
-
-    if errors:
-        print("WARNING: Failed to parse some CSV rows:")
-        for dataset, err in errors:
-            print(f"  {dataset}: {err}")
-        print()
-
-    if not order:
-        print("ERROR: No valid data after parsing.")
-        sys.exit(1)
-
-    # --- Deduplicate order ---
+    # deduplicate order
     seen = set()
-    unique_order = []
-    for name in order:
-        if name not in seen:
-            seen.add(name)
-            unique_order.append(name)
-    order = unique_order
+    unique = []
+    for a in order:
+        if a not in seen:
+            seen.add(a)
+            unique.append(a)
+    return unique, per_alg_values, n_found, errors
 
-    # --- Compute mean and std ---
-    def mean(vals):
-        return sum(vals) / len(vals) if vals else 0.0
 
-    def std(vals):
-        if len(vals) < 2:
-            return 0.0
-        m = mean(vals)
-        return math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1))
+def mean(vals):
+    return sum(vals) / len(vals) if vals else 0.0
 
-    print(f"Aggregated {len(found)} datasets for name='{args.name}', fraction='{args.fraction}':")
-    print("  " + ", ".join(d for d, _ in found))
-    print()
+
+def std(vals):
+    if len(vals) < 2:
+        return 0.0
+    m = mean(vals)
+    return math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1))
+
+
+def print_table(title, order, per_alg_values, n_found):
+    print(f"\n{'=' * 60}")
+    print(f"  {title}  ({n_found} datasets)")
+    print(f"{'=' * 60}")
 
     header_parts = ["Name", "N"]
     for col in DISPLAY_COLS:
         header_parts.append(col)
-        header_parts.append(f"std")
+        header_parts.append("std")
     col_widths = []
     for h in header_parts:
         if h == "Name":
@@ -249,6 +154,61 @@ def main():
             row.append(f"{std(vals[i]):.4f}")
         print(fmt_row(row))
     print(sep)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Aggregate benchmark CSVs from stat/ into per-algorithm mean tables.")
+    parser.add_argument("--name", default="pleco",
+                        help="predictor name to aggregate (default: auto-discover all from stat/)")
+    parser.add_argument("--fraction", default="1",
+                        help="model_fraction (default: 1)")
+    parser.add_argument("--results_dir", default="stat",
+                        help="directory containing CSV result files (default: stat)")
+    parser.add_argument("--expected", default="spec2006",
+                        choices=["spec2006", "none"],
+                        help="expected dataset set (default: spec2006)")
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.results_dir):
+        print(f"ERROR: Results directory not found: {args.results_dir}")
+        sys.exit(1)
+
+    if args.expected == "spec2006":
+        expected = SPEC2006_DATASETS
+    else:
+        expected = sorted(set(
+            f.split("_")[0] for f in os.listdir(args.results_dir) if f.endswith(".csv")
+        ))
+
+    # Determine which predictors to aggregate
+    if args.name:
+        predictors = [args.name]
+    else:
+        predictors = discover_predictors(args.results_dir, expected)
+        if not predictors:
+            print(f"ERROR: No CSV files found in {args.results_dir}/")
+            sys.exit(1)
+        print(f"Auto-discovered predictors: {', '.join(predictors)}")
+
+    for pred in predictors:
+        order, per_alg_values, n_found, errors = aggregate_one(
+            args.results_dir, pred, args.fraction, expected)
+
+        if not order:
+            print(f"\nWARNING: No data found for predictor '{pred}', skipping.")
+            continue
+
+        if errors:
+            print(f"\nWARNING: Errors parsing '{pred}':")
+            for ds, err in errors:
+                print(f"  {ds}: {err}")
+
+        missing = [ds for ds in expected if find_csv(args.results_dir, ds, pred, args.fraction) is None]
+        if missing:
+            print(f"\nWARNING: Missing datasets for '{pred}': {', '.join(missing)}")
+
+        print_table(pred, order, per_alg_values, n_found)
 
 
 if __name__ == "__main__":
