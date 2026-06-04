@@ -1436,13 +1436,32 @@ class PredictiveOnlineMinAlgorithm(OnlineMinAlgorithm):
 
 
 class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
-    """RPB-OnlineMin with an iterated unrevealed-support budget rule.
+    """RPB-OnlineMin: OnlineMin with a budget-gated predictor override.
 
-    An L0 miss resets a prediction budget and non-L0 misses can spend it to
-    use predictor eviction. This variant records Y as the total support size
-    just before an L0-miss eviction. On each later non-L0 miss, Y' is the
-    number of support pages in unrevealed layers; if Y' <= Y / e - 1, it
-    earns one additional budget and sets Y = Y' for the next comparison.
+    Extends OnlineMin by allowing a predictor to choose the eviction victim
+    instead of the default priority-based rule, subject to a replenishable
+    budget that limits how often the predictor is consulted on non-L0 misses.
+
+    Budget mechanism:
+      - On a true L0 miss (new page, not forgiveness): always use the
+        predictor, and reset the budget to ``pred_budget_init`` (the initial
+        budget tau). Record the current unrevealed-support size as
+        ``rpb_y`` (the baseline for subsequent budget replenishment).
+      - On a non-L0 miss: compute the current unrevealed-support size
+        ``y' = k - num_revealed_layers``. If ``y' < rpb_y / e - 2``
+        (i.e., the unrevealed support has shrunk significantly since the
+        last L0 event), replenish one unit of budget. Then, if budget >= 1,
+        use the predictor (decrementing budget); otherwise fall back to
+        OnlineMin's default eviction.
+      - During forgiveness (L0 miss but support is at capacity): always
+        use OnlineMin's default eviction — never override with the predictor.
+
+    Parameters:
+      - ``pred_budget`` (tau): initial prediction budget, reset on each L0 miss.
+        tau=0 means no non-L0 predictor use unless replenished by the
+        shrinking-support rule.
+      - ``max_support_factor``: controls max support size (k * factor) in
+        the underlying OnlineMin.
     """
 
     def __init__(
@@ -1476,6 +1495,7 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
 
         self.evictor = evictor_type()
         self.predictor = predictor_type()
+        self.charge_flag = 0
 
         # Prediction budget for non-L0 predictor use.
         self.pred_budget_init = int(pred_budget)
@@ -1590,11 +1610,14 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
                         if layer_i == 0:
                             # True L0 miss: always predictor-evict.
                             use_predictor = True
-                            self.pred_budget = self.pred_budget_init
+                            if self.charge_flag == 1:
+                                self.pred_budget += self.pred_budget_init
+                            self.charge_flag = 0
                         else:
                             y_prime = self.k - self._num_of_revealed_layers()
-                            if self.rpb_y is not None and y_prime < (self.rpb_y) / math.e - 2:
+                            if self.rpb_y is not None and y_prime <= (self.rpb_y + 2) / math.e - 2:
                                 self.pred_budget += 1
+                                self.charge_flag = 1
 
                             if self.pred_budget >= 1:
                                 use_predictor = True

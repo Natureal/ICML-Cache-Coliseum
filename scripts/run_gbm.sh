@@ -2,17 +2,29 @@
 # Usage: scripts/run_gbm.sh [MODEL_FRACTION]
 # MODEL_FRACTION defaults to 1 (full training set).
 fraction="${1:-1}"
-
-datasets=(astar bwaves bzip cactusadm gems lbm leslie3d libq mcf milc omnetpp sphinx3 xalanc)
+datasets=("astar" "bwaves" "bzip" "cactusadm" "gems" "lbm" "leslie3d" "libq" "mcf" "milc" "omnetpp" "sphinx3" "xalanc")
+MAX_JOBS=4
 
 mkdir -p logs/benchmark/gbm
 pids=()
 for dataset in "${datasets[@]}"; do
-    echo "Running with dataset=$dataset with fraction $fraction"
-    nohup python -m benchmark --boost --boost_fr --dataset "$dataset" --real --pred gbm --model_fraction "$fraction" --dump_file --output_root_dir stat > "logs/benchmark/gbm/${dataset}_${fraction}.log" 2>&1 &
+    while [ ${#pids[@]} -ge $MAX_JOBS ]; do
+        new_pids=()
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                new_pids+=("$pid")
+            fi
+        done
+        pids=("${new_pids[@]}")
+        [ ${#pids[@]} -ge $MAX_JOBS ] && sleep 5
+    done
+
+    echo "Running dataset=$dataset fraction=$fraction"
+    python -m benchmark --boost --boost_fr --dataset "$dataset" --real --pred gbm --model_fraction "$fraction" --dump_file --output_root_dir stat > "logs/benchmark/gbm/${dataset}_${fraction}.log" 2>&1 &
     pids+=($!)
 done
 
+echo "Waiting for ${#pids[@]} jobs to finish..."
 wait "${pids[@]}"
 
 echo "All runs finished. Aggregating results..."

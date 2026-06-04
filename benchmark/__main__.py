@@ -415,6 +415,7 @@ if __name__ == "__main__":
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'OracleDis'),
+                (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=5, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=10, max_support_factor=100), 'OracleDis'),
                 (partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=20, max_support_factor=100), 'OracleDis'),

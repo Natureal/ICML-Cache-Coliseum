@@ -5,7 +5,6 @@ MAX_JOBS=1
 mkdir -p logs/benchmark/oracle
 pids=()
 for dataset in "${datasets[@]}"; do
-    # Wait if we have MAX_JOBS running
     while [ ${#pids[@]} -ge $MAX_JOBS ]; do
         new_pids=()
         for pid in "${pids[@]}"; do
@@ -14,16 +13,15 @@ for dataset in "${datasets[@]}"; do
             fi
         done
         pids=("${new_pids[@]}")
-        if [ ${#pids[@]} -ge $MAX_JOBS ]; then
-            sleep 5
-        fi
+        [ ${#pids[@]} -ge $MAX_JOBS ] && sleep 5
     done
 
     echo "Running dataset=$dataset"
-    nohup python -m benchmark --boost_fr --dataset "$dataset" --oracle --pred oracle_dis --noise_type logdis --dump_file --output_root_dir stat > "logs/benchmark/oracle/${dataset}_logdis.log" 2>&1 &
+    python -m benchmark --boost_fr --dataset "$dataset" --oracle --pred oracle_dis --noise_type logdis --dump_file --output_root_dir stat > "logs/benchmark/oracle/${dataset}_logdis.log" 2>&1 &
     pids+=($!)
 done
 
+echo "Waiting for ${#pids[@]} jobs to finish..."
 wait "${pids[@]}"
 
 echo "All runs finished. Aggregating results..."
