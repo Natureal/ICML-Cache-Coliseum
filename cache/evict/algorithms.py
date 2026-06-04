@@ -1612,12 +1612,13 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
                             use_predictor = True
                             if self.charge_flag == 1:
                                 self.pred_budget += self.pred_budget_init
-                            self.charge_flag = 0
+                            self.charge_flag = 1
                         else:
                             y_prime = self.k - self._num_of_revealed_layers()
                             if self.rpb_y is not None and y_prime <= (self.rpb_y + 2) / math.e - 2:
                                 self.pred_budget += 1
-                                self.charge_flag = 1
+                            else:
+                                self.charge_flag = 0
 
                             if self.pred_budget >= 1:
                                 use_predictor = True
