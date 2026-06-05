@@ -306,18 +306,20 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
-                # Continuous variant: hit-accumulated fractional credit
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
                 # HitCredit: persistent hit-accumulated credit (not reset on L0)
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
+                # Simple: L0 reset only, no gate-pass logic
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), LRUAlgorithm]),
@@ -351,18 +353,20 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
-                # Continuous variant: hit-accumulated fractional credit
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
                 # HitCredit: persistent hit-accumulated credit (not reset on L0)
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinHitCreditAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
+                # Simple: L0 reset only, no gate-pass logic
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSimpleAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), LRUAlgorithm]),

@@ -1435,16 +1435,8 @@ class PredictiveOnlineMinAlgorithm(OnlineMinAlgorithm):
         return hit
 
 
-class PredictiveRPBOnlineMinChargeFlagAlgorithm(PredictiveOnlineMinAlgorithm):
-    """RPB-OnlineMin (paper Sec. 4.3): OnlineMin with a budget-gated predictor override.
-
-    Extends PredictiveOnlineMin by funding a *replenishable prediction budget*
-    that lets the predictor pick the victim on non-L0 misses too — when the
-    budget is positive. This variant uses the paper's F flag (``charge_flag``)
-    to gate the per-L0 ``tau`` replenishment.
-
-    For the simpler "L0 always += tau" variant (no F gating), see
-    ``PredictiveRPBOnlineMinAlgorithm`` below.
+class PredictiveRPBOnlineMinAlgorithm(PredictiveOnlineMinAlgorithm):
+    """RPB-OnlineMin: OnlineMin with a budget-gated predictor override.
 
     Budget mechanism (matches the paper's RPB functions $\\mathcal{G}_{RPB}$ and
     $\\mathcal{U}_{RPB}$ with $U(\\omega) = k - |R(\\omega)|$):
@@ -1508,10 +1500,8 @@ class PredictiveRPBOnlineMinChargeFlagAlgorithm(PredictiveOnlineMinAlgorithm):
         self.non_l0_om_evictions = 0
 
     def _replenish_l0_budget(self) -> None:
-        """L0 += tau iff F=1, then reset F. Paper's F-flag gating."""
-        if self.charge_flag == 1:
-            self.pred_budget += self.pred_budget_init
-        self.charge_flag = 0
+        """Unconditional hard reset: budget = tau on every L0 miss."""
+        self.pred_budget = self.pred_budget_init
 
     def _onlinemin_eviction_candidate_pages(self, eviction_layer: int) -> List[object]:
         cache_pages = [p for p in self.cache if p is not None]
@@ -1658,59 +1648,20 @@ class PredictiveRPBOnlineMinChargeFlagAlgorithm(PredictiveOnlineMinAlgorithm):
         return hit
 
 
-class PredictiveRPBOnlineMinAlgorithm(PredictiveRPBOnlineMinChargeFlagAlgorithm):
-    """RPB-OnlineMin with unconditional L0 budget reset (no F-flag gating).
+class PredictiveRPBOnlineMinSimpleAlgorithm(PredictiveRPBOnlineMinAlgorithm):
+    """RPB-OnlineMin without gate-pass logic.
 
-    Differs from ``PredictiveRPBOnlineMinChargeFlagAlgorithm`` only at L0:
-    ``self.pred_budget = self.pred_budget_init`` is applied every L0 miss,
-    regardless of whether the previous epoch contained a gate-pass.
-
-    The F flag (``self.charge_flag``) is still set on gate-pass by the
-    inherited ``access()`` (so subclasses that read it keep working), but
-    this class's L0 hook ignores it.
-
-    Robustness: still $H_k + O(1)$. The proof only needs $\\Delta B \\le \\tau$
-    on each L0 — unconditional hard-reset satisfies it. The F-gating used by
-    the paper-faithful variant is an optional refinement to bound budget
-    growth across "predictor-poor" epochs; this simpler variant trades that
-    for slightly more aggressive predictor use.
+    On L0 miss: reset budget to tau, use predictor.
+    On non-L0 miss: if budget >= 1, use predictor (budget -= 1); else use OM.
+    No rpb_y tracking, no gate-pass/gate-fail, no budget replenishment
+    from support structure changes. Budget only comes from L0 resets.
     """
-
-    def _replenish_l0_budget(self) -> None:
-        # Hard reset: ignore F, always set budget to tau.
-        self.pred_budget = self.pred_budget_init
-
-
-####################################################################
-
-class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm):
-    """RPB-OnlineMin with hit-accumulated credit for gate-pass.
-
-    On each cache hit, accumulates 1 / (k - num_revealed_layers + 1)
-    into a running sum (hit_credit). On a non-L0 miss, if hit_credit >= 1,
-    a gate-pass is granted: pred_budget += 1, hit_credit -= 1.
-    This replaces the original discrete e-fold-drop gate check.
-
-    Parameters:
-      - pred_budget (tau): initial prediction budget, recharged on L0 miss.
-      - max_support_factor: controls max support size in OnlineMin.
-    """
-
-    def __init__(self, associativity, evictor_type, predictor_type,
-                 max_support_factor=3, pred_budget=0):
-        super().__init__(associativity, evictor_type, predictor_type,
-                         max_support_factor=max_support_factor,
-                         pred_budget=pred_budget)
-        self.hit_credit = 0.0
 
     def access(self, pc, address) -> bool:
         self.before_pred(pc, address)
 
         handled, hit, target_index = self._warmup_access(pc, address)
         if handled:
-            if hit:
-                unrevealed = self.k - self._num_of_revealed_layers() + 1
-                self.hit_credit += 1.0 / unrevealed
             self.after_pred(pc, address, target_index)
             return hit
 
@@ -1718,8 +1669,8 @@ class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm)
         extras = [p for p in cache_set if p not in self.support]
         if extras:
             raise RuntimeError(
-                'PredictiveRPBOnlineMinContinuous invariant violated (pre-evict). '
-                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+                'PredictiveRPBOnlineMinSimple invariant violated (pre-evict). '
+                f'addr={address} extras={extras}'
             )
 
         hit = address in self.cache
@@ -1727,8 +1678,6 @@ class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm)
         if hit:
             target_index = self.cache.index(address)
             self.pcs[target_index] = pc
-            unrevealed = self.k - self._num_of_revealed_layers() + 1
-            self.hit_credit += 1.0 / unrevealed
 
         layer_i = self.layer_of.get(address, 0)
         forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
@@ -1750,26 +1699,11 @@ class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm)
                     if self.preds is not None:
                         if layer_i == 0:
                             use_predictor = True
-                            if self.charge_flag == 1:
-                                self.pred_budget += self.pred_budget_init
-                            self.charge_flag = 0
-                            self.hit_credit = 0.0
-                            self.l0_miss_count += 1
+                            self.pred_budget = self.pred_budget_init
                         else:
-                            if self.hit_credit >= 1.0:
-                                self.pred_budget += 1
-                                self.hit_credit -= 1.0
-                                self.charge_flag = 1
-                                self.gate_pass_count += 1
-                            else:
-                                self.gate_fail_count += 1
-
                             if self.pred_budget >= 1:
                                 use_predictor = True
                                 self.pred_budget -= 1
-                                self.non_l0_pred_evictions += 1
-                            else:
-                                self.non_l0_om_evictions += 1
 
                     if use_predictor:
                         candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
@@ -1788,16 +1722,14 @@ class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm)
                         self.pcs[target_index] = pc
 
         self._update_layers_after_request(address, layer_i, forgiveness)
-        if not hit:
-            self.rpb_y = self.k - self._num_of_revealed_layers()
 
         cache_set = {p for p in self.cache if p is not None}
         extras = [p for p in cache_set if p not in self.support]
         if extras:
             raise RuntimeError(
-                'PredictiveRPBOnlineMinContinuous invariant violated (post). '
+                'PredictiveRPBOnlineMinSimple invariant violated (post). '
                 f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
-                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+                f'extras={extras}'
             )
 
         if target_index is None:
@@ -1806,6 +1738,22 @@ class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm)
 
         return hit
 
+
+class PredictiveRPBOnlineMinChargeFlagAlgorithm(PredictiveRPBOnlineMinAlgorithm):
+    """RPB-OnlineMin with F-flag gated L0 budget replenishment (paper-faithful).
+
+    Differs from the base ``PredictiveRPBOnlineMinAlgorithm`` only at L0:
+    budget += tau is applied only if the previous epoch contained at least
+    one gate-pass (charge_flag == 1). This matches the paper's F-flag gating.
+    """
+
+    def _replenish_l0_budget(self) -> None:
+        if self.charge_flag == 1:
+            self.pred_budget += self.pred_budget_init
+        self.charge_flag = 0
+
+
+####################################################################
 
 class PredictiveRPBOnlineMinHitCreditAlgorithm(PredictiveRPBOnlineMinAlgorithm):
     """RPB-OnlineMin with persistent hit-accumulated credit.
@@ -2045,7 +1993,7 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
         # otherwise 'PredictiveRPBOnlineMin' gets eaten first.
         # Longer/more-specific names must come BEFORE shorter ones with same prefix.
         .replace('PredictiveRPBOnlineMinHitCredit', 'RPB-OM-HC')
-        .replace('PredictiveRPBOnlineMinContinuous', 'RPB-OM-A')
+        .replace('PredictiveRPBOnlineMinSimple', 'RPB-OM-S')
         .replace('PredictiveRPBOnlineMinChargeFlag', 'RPB-OnlineMin-CF')
         .replace('PredictiveRPBOnlineMin', 'RPB-OnlineMin')
     )
@@ -2098,7 +2046,7 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
         # ChargeFlag is the BASE of all RPB variants (incl. the simple/hard-reset
         # `PredictiveRPBOnlineMinAlgorithm` and Plan A/B subclasses), so checking
         # against it catches every RPB variant.
-        if issubclass(this_cls, PredictiveRPBOnlineMinChargeFlagAlgorithm):
+        if issubclass(this_cls, PredictiveRPBOnlineMinAlgorithm):
             metadata += f"-pb-{kw.get('pred_budget', 0)}"
 
     return metadata
