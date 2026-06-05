@@ -298,6 +298,11 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
+                # ChargeFlag variant: paper-faithful F-flag-gated L0 += tau
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
                 # Plan A: continuous fractional credit (full pb sweep)
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
@@ -305,24 +310,6 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
-                # Plan A-sum: tighter (sum-form) credit
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
-                # Plan A-pr: per-reveal hook
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
-                # Plan B: lowered threshold gate_c=2.0 (full pb sweep)
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=0, max_support_factor=100, gate_c=2.0), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=1, max_support_factor=100, gate_c=2.0), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=2.0), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=16, max_support_factor=100, gate_c=2.0), 'PLECO'),
-                # Plan B: more aggressive thresholds at pb=4 for gate_c sweep
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.5), 'PLECO'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.2), 'PLECO'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), LRUAlgorithm]),
@@ -355,14 +342,6 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
-                # Plan B: lowered threshold gate_c=2.0
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=0, max_support_factor=100, gate_c=2.0), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=1, max_support_factor=100, gate_c=2.0), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=2.0), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=16, max_support_factor=100, gate_c=2.0), 'POPU'),
-                # Plan B: more aggressive thresholds at pb=4
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.5), 'POPU'),
-                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.2), 'POPU'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), LRUAlgorithm]),
