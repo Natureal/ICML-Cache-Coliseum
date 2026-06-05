@@ -1,7 +1,7 @@
 # ICML-Cache-Coliseum
 
 [![Paper](https://img.shields.io/badge/arXiv-2606.01342-b31b1b)](https://arxiv.org/abs/2606.01342)
-[![ICML](https://img.shields.io/badge/ICML-Accepted-blueviolet)](https://arxiv.org/abs/2606.01342)
+[![ICML](https://img.shields.io/badge/ICML%202026-Spotlight-blueviolet)](https://arxiv.org/abs/2606.01342)
 
 Built on top of [Cache-Coliseum](https://github.com/OptiSys-ZJU/Cache-Coliseum) (OptiSys-ZJU), this repository extends the benchmark with the **OnlineMin** family of randomized paging algorithms and a predictor-augmented variant, **RPB-OM**. Implementation of the ICML'26 paper Towards Optimal Robustness in Learning-Augmented Paging [[arXiv:2606.01342](https://arxiv.org/abs/2606.01342)].
 
