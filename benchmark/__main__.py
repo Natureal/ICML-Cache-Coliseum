@@ -56,6 +56,8 @@ if __name__ == "__main__":
     parser.add_argument("--lightgbm_config_path", type=str, default='checkpoints/lightgbm/model_config.json')
 
     parser.add_argument("--memory_window", type=int, default=1000000)
+    parser.add_argument("--capacity", type=int, default=0,
+                        help="override cache capacity (default: dataset-specific)")
 
     args = parser.parse_args()
     if args.test_all:
@@ -83,6 +85,10 @@ if __name__ == "__main__":
         associativity = 16
         align_type = ShiftAligner
         hash_type = ShiftHashFunction
+
+    if args.capacity > 0 and args.dataset not in ('brightkite', 'citi'):
+        capacity = args.capacity
+        associativity = capacity // cache_line_size
 
     this_preds = []
     real_predictors_type = ['parrot', 'pleco', 'popu', 'pleco-bin', 'gbm', 'lrb']

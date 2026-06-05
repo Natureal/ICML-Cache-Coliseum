@@ -1,9 +1,14 @@
 #!/bin/bash
-# Usage: scripts/run_gbm.sh [MODEL_FRACTION]
-# MODEL_FRACTION defaults to 1 (full training set).
+# Usage: scripts/run_gbm.sh [MODEL_FRACTION] [CAPACITY]
 fraction="${1:-1}"
+capacity="${2:-0}"
 datasets=("astar" "bwaves" "bzip" "cactusadm" "gems" "lbm" "leslie3d" "libq" "mcf" "milc" "omnetpp" "sphinx3" "xalanc")
 MAX_JOBS=4
+
+cap_flag=""
+if [ "$capacity" -gt 0 ] 2>/dev/null; then
+    cap_flag="--capacity $capacity"
+fi
 
 mkdir -p logs/benchmark/gbm
 pids=()
@@ -20,7 +25,7 @@ for dataset in "${datasets[@]}"; do
     done
 
     echo "Running dataset=$dataset fraction=$fraction"
-    python -m benchmark --boost --boost_fr --dataset "$dataset" --real --pred gbm --model_fraction "$fraction" --dump_file --output_root_dir stat > "logs/benchmark/gbm/${dataset}_${fraction}.log" 2>&1 &
+    python -m benchmark --boost --boost_fr --dataset "$dataset" --real --pred gbm --model_fraction "$fraction" --dump_file --output_root_dir stat $cap_flag > "logs/benchmark/gbm/${dataset}_${fraction}.log" 2>&1 &
     pids+=($!)
 done
 

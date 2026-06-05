@@ -1,6 +1,13 @@
 #!/bin/bash
+# Usage: scripts/run_logdis.sh [CAPACITY]
+capacity="${1:-0}"
 datasets=("astar" "bwaves" "bzip" "cactusadm" "gems" "lbm" "leslie3d" "libq" "mcf" "milc" "omnetpp" "sphinx3" "xalanc")
-MAX_JOBS=8
+MAX_JOBS=4
+
+cap_flag=""
+if [ "$capacity" -gt 0 ] 2>/dev/null; then
+    cap_flag="--capacity $capacity"
+fi
 
 mkdir -p logs/benchmark/oracle
 pids=()
@@ -17,7 +24,7 @@ for dataset in "${datasets[@]}"; do
     done
 
     echo "Running dataset=$dataset"
-    python -m benchmark --boost_fr --dataset "$dataset" --oracle --pred oracle_dis --noise_type logdis --dump_file --output_root_dir stat > "logs/benchmark/oracle/${dataset}_logdis.log" 2>&1 &
+    python -m benchmark --boost_fr --dataset "$dataset" --oracle --pred oracle_dis --noise_type logdis --dump_file --output_root_dir stat $cap_flag > "logs/benchmark/oracle/${dataset}_logdis.log" 2>&1 &
     pids+=($!)
 done
 
