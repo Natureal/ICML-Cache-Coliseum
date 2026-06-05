@@ -292,6 +292,7 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(LNonMarker, 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(FollowerRobust, boost=args.boost_fr), 'PLECO-State', associativity=associativity),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'PLECO'),
+                # Simple RPB (L0 unconditionally += tau)
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
@@ -301,9 +302,11 @@ if __name__ == "__main__":
                 # ChargeFlag variant: paper-faithful F-flag-gated L0 += tau
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
-                # Plan A: continuous fractional credit (full pb sweep)
+                # Continuous variant: hit-accumulated fractional credit
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
@@ -329,13 +332,21 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(LNonMarker, 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(FollowerRobust, boost=args.boost_fr), 'POPU-State', associativity=associativity),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveOnlineMinAlgorithm, max_support_factor=100), 'POPU'),
+                # Simple RPB (L0 unconditionally += tau)
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
-                # Plan A: continuous fractional credit
+                # ChargeFlag variant: paper-faithful F-flag-gated L0 += tau
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinChargeFlagAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
+                # Continuous variant: hit-accumulated fractional credit
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
