@@ -1,6 +1,6 @@
 #!/bin/bash
 datasets=("astar" "bwaves" "bzip" "cactusadm" "gems" "lbm" "leslie3d" "libq" "mcf" "milc" "omnetpp" "sphinx3" "xalanc")
-MAX_JOBS=1
+MAX_JOBS=8
 
 mkdir -p logs/benchmark/oracle
 pids=()
