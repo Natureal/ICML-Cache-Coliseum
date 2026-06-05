@@ -1807,6 +1807,129 @@ class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm)
         return hit
 
 
+class PredictiveRPBOnlineMinHitCreditAlgorithm(PredictiveRPBOnlineMinAlgorithm):
+    """RPB-OnlineMin with persistent hit-accumulated credit.
+
+    On each cache hit, accumulates 1 / (k - num_revealed_layers + 1) into
+    hit_credit. Unlike the Continuous variant, hit_credit is NOT reset on
+    L0 misses — it persists across epochs, reflecting RPB-OM's cumulative
+    cache quality advantage.
+
+    On a non-L0 miss, if hit_credit >= 1, a gate-pass is granted:
+    pred_budget += 1, hit_credit -= 1.
+
+    Rationale: hits mean the predictor kept the right pages in cache.
+    L0 misses (new pages) are not the predictor's fault and should not
+    erase accumulated evidence of good performance.
+    """
+
+    def __init__(self, associativity, evictor_type, predictor_type,
+                 max_support_factor=3, pred_budget=0):
+        super().__init__(associativity, evictor_type, predictor_type,
+                         max_support_factor=max_support_factor,
+                         pred_budget=pred_budget)
+        self.hit_credit = 0.0
+
+    def access(self, pc, address) -> bool:
+        self.before_pred(pc, address)
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            if hit:
+                unrevealed = self.k - self._num_of_revealed_layers() + 1
+                self.hit_credit += 1.0 / unrevealed
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinHitCredit invariant violated (pre-evict). '
+                f'addr={address} extras={extras}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+            unrevealed = self.k - self._num_of_revealed_layers() + 1
+            self.hit_credit += 1.0 / unrevealed
+
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                if forgiveness:
+                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                    target_index = victim_idx
+                    self.cache[target_index] = address
+                    self.pcs[target_index] = pc
+                else:
+                    use_predictor = False
+                    if self.preds is not None:
+                        if layer_i == 0:
+                            use_predictor = True
+                            self.pred_budget = self.pred_budget_init
+                            self.l0_miss_count += 1
+                        else:
+                            if self.hit_credit >= 1.0:
+                                self.pred_budget += 1
+                                self.hit_credit -= 1.0
+                                self.gate_pass_count += 1
+                            else:
+                                self.gate_fail_count += 1
+
+                            if self.pred_budget >= 1:
+                                use_predictor = True
+                                self.pred_budget -= 1
+                                self.non_l0_pred_evictions += 1
+                            else:
+                                self.non_l0_om_evictions += 1
+
+                    if use_predictor:
+                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
+                        if not candidate_indices:
+                            candidate_indices = list(range(self.k))
+                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
+                        victim_idx = self.evictor.evict(scored_candidates)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+                    else:
+                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+
+        self._update_layers_after_request(address, layer_i, forgiveness)
+        if not hit:
+            self.rpb_y = self.k - self._num_of_revealed_layers()
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinHitCredit invariant violated (post). '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras}'
+            )
+
+        if target_index is None:
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
+
 class PredictAlgorithmFactory:
     predictor_evict_dict = {
         "PLECO": (MaxEvictor, PLECOPredictor),
@@ -1921,6 +2044,7 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
         # Plan A / Plan B must be replaced BEFORE the generic RPB replacement,
         # otherwise 'PredictiveRPBOnlineMin' gets eaten first.
         # Longer/more-specific names must come BEFORE shorter ones with same prefix.
+        .replace('PredictiveRPBOnlineMinHitCredit', 'RPB-OM-HC')
         .replace('PredictiveRPBOnlineMinContinuous', 'RPB-OM-A')
         .replace('PredictiveRPBOnlineMinChargeFlag', 'RPB-OnlineMin-CF')
         .replace('PredictiveRPBOnlineMin', 'RPB-OnlineMin')
