@@ -65,12 +65,28 @@ class Cache:
     
     def stat(self):
         return (self.hits, self.miss, self.counts, round(self.hits / self.counts, 4))
-    
+
     # todo
     def set_stat(self, hits, miss, counts):
         self.hits = hits
         self.miss = miss
         self.counts = counts
+
+    def get_rpb_stats(self):
+        """Aggregate RPB instrumentation across all sets. Returns None if no set's evict_alg has them."""
+        keys = ('l0_miss_count', 'gate_pass_count', 'gate_fail_count',
+                'non_l0_pred_evictions', 'non_l0_om_evictions')
+        total = {k: 0 for k in keys}
+        has_any = False
+        for alg in self.evict_algs:
+            if hasattr(alg, 'gate_pass_count'):
+                has_any = True
+                for k in keys:
+                    total[k] += getattr(alg, k)
+        return total if has_any else None
+
+    def set_rpb_stats(self, stats):
+        self.rpb_stats = stats
 
 class DumpCache(Cache):
     def __init__(self, is_state, trace_path, aligner_type, evict_type, hash_type, cache_line_size, cache_capacity, associativity):

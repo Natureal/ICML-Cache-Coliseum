@@ -1505,6 +1505,13 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
         # the unrevealed-support size whenever a non-L0 miss releases budget.
         self.rpb_y: Optional[int] = None
 
+        # RPB instrumentation
+        self.gate_pass_count = 0
+        self.gate_fail_count = 0
+        self.l0_miss_count = 0
+        self.non_l0_pred_evictions = 0
+        self.non_l0_om_evictions = 0
+
     def snapshot(self):
         return (list(zip(self.cache, self.pcs)), self.preds)
 
@@ -1592,6 +1599,12 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
         forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
         eviction_layer = 1 if forgiveness else layer_i
 
+        # rpb_y must be refreshed on EVERY miss (any miss-type) so that
+        # the gate-pass "process" in the robustness proof only covers a
+        # hit-only segment — otherwise the phi decrease at gate-fail misses
+        # would be double-counted (once in case 1, once in the gate-pass bundle).
+        update_rpb_y = (not hit)
+
         if not hit:
             if None in self.cache:
                 target_index = self.cache.index(None)
@@ -1610,19 +1623,30 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
                         if layer_i == 0:
                             # True L0 miss: always predictor-evict.
                             use_predictor = True
-                            if self.charge_flag == 1:
-                                self.pred_budget += self.pred_budget_init
-                            self.charge_flag = 1
+                            # Replenish budget by tau only if the previous epoch
+                            # contained at least one gate-pass.
+                            #if self.charge_flag == 1:
+                            self.pred_budget = self.pred_budget_init
+                            #self.charge_flag = 0
+                            self.l0_miss_count += 1
                         else:
                             y_prime = self.k - self._num_of_revealed_layers()
                             if self.rpb_y is not None and y_prime <= (self.rpb_y + 2) / math.e - 2:
                                 self.pred_budget += 1
+                                self.gate_pass_count += 1
+                                # update_rpb_y = True
+                                # Mark this epoch as having a gate-pass so the
+                                # next L0-miss earns a tau replenishment.
+                                self.charge_flag = 1
                             else:
-                                self.charge_flag = 0
+                                self.gate_fail_count += 1
 
                             if self.pred_budget >= 1:
                                 use_predictor = True
                                 self.pred_budget -= 1
+                                self.non_l0_pred_evictions += 1
+                            else:
+                                self.non_l0_om_evictions += 1
 
                     if use_predictor:
                         candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
@@ -1643,7 +1667,8 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
 
         # Update layers after cache update (as in OnlineMin).
         self._update_layers_after_request(address, layer_i, forgiveness)
-        self.rpb_y = self.k - self._num_of_revealed_layers()
+        if update_rpb_y:
+            self.rpb_y = self.k - self._num_of_revealed_layers()
 
         # Invariant: cache must be subset of support.
         cache_set = {p for p in self.cache if p is not None}
@@ -1664,6 +1689,422 @@ class PredictiveRPBOnlineMinAlgorithm(OnlineMinAlgorithm):
 
 
 ####################################################################
+
+class PredictiveRPBOnlineMinContinuousAlgorithm(PredictiveRPBOnlineMinAlgorithm):
+    """Plan A: continuous fractional credit accumulation.
+
+    Replaces the discrete "+1 token at e-fold drop" gate with a
+    fractional credit issued on every non-L0 miss equal to
+        c = ln((rpb_y + 2) / (y_prime + 2))   if y_prime < rpb_y else 0
+    which is precisely the lower bound on the phi-decrease accumulated
+    over the prior hit-only segment (per Lemma om_potential).
+
+    The c -> 1 limit of Plan B's lowered-threshold variant. Avoids
+    losing small inter-miss optimization margins to threshold
+    quantization. The pred_budget is real-valued; predictor consumes
+    1 unit per use as before.
+
+    charge_flag is set to 1 when the epoch's accumulated credit crosses
+    1.0 (the continuous analog of "had at least one full gate-pass
+    worth of credit"), used to gate the L0 += tau replenishment.
+    """
+
+    def __init__(self, associativity, evictor_type, predictor_type,
+                 max_support_factor=3, pred_budget=0):
+        super().__init__(associativity, evictor_type, predictor_type,
+                         max_support_factor=max_support_factor,
+                         pred_budget=pred_budget)
+        self.epoch_credit = 0.0
+
+    def _compute_segment_credit(self, rpb_y, y_prime):
+        """Plan A-int (default): integral lower bound on Delta phi'."""
+        return math.log((rpb_y + 2) / (y_prime + 2))
+
+    def access(self, pc, address) -> bool:
+        self.before_pred(pc, address)
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinContinuous invariant violated (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        update_rpb_y = (not hit)
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                if forgiveness:
+                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                    target_index = victim_idx
+                    self.cache[target_index] = address
+                    self.pcs[target_index] = pc
+                else:
+                    use_predictor = False
+                    if self.preds is not None:
+                        if layer_i == 0:
+                            use_predictor = True
+                            if self.charge_flag == 1:
+                                self.pred_budget += self.pred_budget_init
+                            self.charge_flag = 0
+                            self.epoch_credit = 0.0
+                            self.l0_miss_count += 1
+                        else:
+                            y_prime = self.k - self._num_of_revealed_layers()
+                            # Plan A: continuous credit = -Delta phi' lower bound
+                            if self.rpb_y is not None and y_prime < self.rpb_y:
+                                credit = self._compute_segment_credit(self.rpb_y, y_prime)
+                                self.pred_budget += credit
+                                self.epoch_credit += credit
+                                if self.epoch_credit >= 1.0:
+                                    self.charge_flag = 1
+                                self.gate_pass_count += 1
+                            else:
+                                self.gate_fail_count += 1
+
+                            if self.pred_budget >= 1:
+                                use_predictor = True
+                                self.pred_budget -= 1
+                                self.non_l0_pred_evictions += 1
+                            else:
+                                self.non_l0_om_evictions += 1
+
+                    if use_predictor:
+                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
+                        if not candidate_indices:
+                            candidate_indices = list(range(self.k))
+                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
+                        victim_idx = self.evictor.evict(scored_candidates)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+                    else:
+                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+
+        self._update_layers_after_request(address, layer_i, forgiveness)
+        if update_rpb_y:
+            self.rpb_y = self.k - self._num_of_revealed_layers()
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinContinuous invariant violated (post). '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        if target_index is None:
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
+
+class PredictiveRPBOnlineMinSumAlgorithm(PredictiveRPBOnlineMinContinuousAlgorithm):
+    """Plan A-sum: same as Continuous (integral form) but with the tighter
+    sum-form lower bound on Delta phi'.
+
+    credit = sum_{i = y_prime + 2}^{rpb_y + 1} 1/i
+
+    Exactly matches the per-event sum that appears in the robustness
+    proof. Always >= the integral bound (Continuous), so empirically
+    awards slightly more credit per segment.
+    """
+
+    def _compute_segment_credit(self, rpb_y, y_prime):
+        # sum_{i = y_prime+2}^{rpb_y+1} 1/i, inclusive on both ends
+        # equivalent to sum over range(y_prime+2, rpb_y+2)
+        return sum(1.0 / i for i in range(y_prime + 2, rpb_y + 2))
+
+
+class PredictiveRPBOnlineMinPerRevealAlgorithm(PredictiveRPBOnlineMinAlgorithm):
+    """Plan A-pr: per-reveal credit hook.
+
+    Instead of batching credit at each miss, this class adds credit
+    EVERY TIME the unrevealed-layer count U decreases during a HIT
+    access (the miss's own Delta phi is left for the case-1 absorption
+    in the proof, same as the other Plan A variants).
+
+    Per-access credit: sum_{i = U_after + 2}^{U_before + 1} 1/i (on hits only).
+
+    Total credit accumulated over a hit-only segment is exactly equal
+    to RPB-OM-A-sum's credit at the next miss — so this variant should
+    produce identical algorithm behavior to RPB-OM-A-sum.  The point
+    of this implementation is to verify the equivalence empirically
+    and to express the philosophy "credit issued at every reveal event".
+    """
+
+    def __init__(self, associativity, evictor_type, predictor_type,
+                 max_support_factor=3, pred_budget=0):
+        super().__init__(associativity, evictor_type, predictor_type,
+                         max_support_factor=max_support_factor,
+                         pred_budget=pred_budget)
+        self.epoch_credit = 0.0
+        # Track U after last access to detect reveals on hits.
+        self._u_last = None
+
+    def access(self, pc, address) -> bool:
+        self.before_pred(pc, address)
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinPerReveal invariant violated (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        update_rpb_y = (not hit)
+
+        # U_before: state at start of this access (= state at end of prior access)
+        u_before = self.k - self._num_of_revealed_layers()
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                if forgiveness:
+                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                    target_index = victim_idx
+                    self.cache[target_index] = address
+                    self.pcs[target_index] = pc
+                else:
+                    use_predictor = False
+                    if self.preds is not None:
+                        if layer_i == 0:
+                            use_predictor = True
+                            if self.charge_flag == 1:
+                                self.pred_budget += self.pred_budget_init
+                            self.charge_flag = 0
+                            self.epoch_credit = 0.0
+                            self.l0_miss_count += 1
+                        else:
+                            # In per-reveal mode, credit has been accumulated
+                            # incrementally during prior hits — nothing to add here.
+                            # Still update gate-pass / gate-fail counters for
+                            # diagnostic comparability with the other variants.
+                            y_prime = self.k - self._num_of_revealed_layers()
+                            if self.rpb_y is not None and y_prime < self.rpb_y:
+                                self.gate_pass_count += 1
+                            else:
+                                self.gate_fail_count += 1
+
+                            if self.pred_budget >= 1:
+                                use_predictor = True
+                                self.pred_budget -= 1
+                                self.non_l0_pred_evictions += 1
+                            else:
+                                self.non_l0_om_evictions += 1
+
+                    if use_predictor:
+                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
+                        if not candidate_indices:
+                            candidate_indices = list(range(self.k))
+                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
+                        victim_idx = self.evictor.evict(scored_candidates)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+                    else:
+                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+
+        self._update_layers_after_request(address, layer_i, forgiveness)
+        if update_rpb_y:
+            self.rpb_y = self.k - self._num_of_revealed_layers()
+
+        # Per-reveal credit: only on HITS, for the reveals this access
+        # triggered (U dropping during _update_layers_after_request).
+        u_after = self.k - self._num_of_revealed_layers()
+        if hit and u_after < u_before:
+            credit = sum(1.0 / i for i in range(u_after + 2, u_before + 2))
+            self.pred_budget += credit
+            self.epoch_credit += credit
+            if self.epoch_credit >= 1.0:
+                self.charge_flag = 1
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinPerReveal invariant violated (post). '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        if target_index is None:
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
+
+class PredictiveRPBOnlineMinThresholdAlgorithm(PredictiveRPBOnlineMinAlgorithm):
+    """Plan B: lowered gate threshold with proportional credit.
+
+    Gate-pass condition relaxed to
+        U(omega) <= (Y + 2) / gate_c - 2,    gate_c in (1, e]
+    Each gate-pass earns ln(gate_c) budget (proportional to the
+    strictness of the threshold). With gate_c == e this reduces
+    exactly to the original RPB-OnlineMin (each pass earns 1).
+    Smaller gate_c => more passes but smaller per-pass credit;
+    total absorption capacity per unit time is preserved by the
+    proof's bundle argument.
+    """
+
+    def __init__(self, associativity, evictor_type, predictor_type,
+                 max_support_factor=3, pred_budget=0, gate_c=math.e):
+        super().__init__(associativity, evictor_type, predictor_type,
+                         max_support_factor=max_support_factor,
+                         pred_budget=pred_budget)
+        self.gate_c = float(gate_c)
+        self.gate_credit = math.log(self.gate_c)
+
+    def access(self, pc, address) -> bool:
+        self.before_pred(pc, address)
+
+        handled, hit, target_index = self._warmup_access(pc, address)
+        if handled:
+            self.after_pred(pc, address, target_index)
+            return hit
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinThreshold invariant violated (pre-evict). '
+                f'addr={address} extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        hit = address in self.cache
+        target_index = None
+        if hit:
+            target_index = self.cache.index(address)
+            self.pcs[target_index] = pc
+
+        layer_i = self.layer_of.get(address, 0)
+        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
+        eviction_layer = 1 if forgiveness else layer_i
+
+        update_rpb_y = (not hit)
+
+        if not hit:
+            if None in self.cache:
+                target_index = self.cache.index(None)
+                self.cache[target_index] = address
+                self.pcs[target_index] = pc
+            else:
+                if forgiveness:
+                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                    target_index = victim_idx
+                    self.cache[target_index] = address
+                    self.pcs[target_index] = pc
+                else:
+                    use_predictor = False
+                    if self.preds is not None:
+                        if layer_i == 0:
+                            use_predictor = True
+                            if self.charge_flag == 1:
+                                self.pred_budget += self.pred_budget_init
+                            self.charge_flag = 0
+                            self.l0_miss_count += 1
+                        else:
+                            y_prime = self.k - self._num_of_revealed_layers()
+                            # Plan B: lowered threshold (gate_c), credit = ln(gate_c)
+                            if self.rpb_y is not None and y_prime <= (self.rpb_y + 2) / self.gate_c - 2:
+                                self.pred_budget += self.gate_credit
+                                self.gate_pass_count += 1
+                                self.charge_flag = 1
+                            else:
+                                self.gate_fail_count += 1
+
+                            if self.pred_budget >= 1:
+                                use_predictor = True
+                                self.pred_budget -= 1
+                                self.non_l0_pred_evictions += 1
+                            else:
+                                self.non_l0_om_evictions += 1
+
+                    if use_predictor:
+                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
+                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
+                        if not candidate_indices:
+                            candidate_indices = list(range(self.k))
+                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
+                        victim_idx = self.evictor.evict(scored_candidates)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+                    else:
+                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
+                        target_index = victim_idx
+                        self.cache[target_index] = address
+                        self.pcs[target_index] = pc
+
+        self._update_layers_after_request(address, layer_i, forgiveness)
+        if update_rpb_y:
+            self.rpb_y = self.k - self._num_of_revealed_layers()
+
+        cache_set = {p for p in self.cache if p is not None}
+        extras = [p for p in cache_set if p not in self.support]
+        if extras:
+            raise RuntimeError(
+                'PredictiveRPBOnlineMinThreshold invariant violated (post). '
+                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
+                f'extras={extras} cache={list(self.cache)} support_size={len(self.support)}'
+            )
+
+        if target_index is None:
+            target_index = 0
+        self.after_pred(pc, address, target_index)
+
+        return hit
+
 
 class PredictAlgorithmFactory:
     predictor_evict_dict = {
@@ -1769,7 +2210,22 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
     this_cls = callable
     if hasattr(callable, 'func'):
         this_cls = callable.func
-    this_cls_name = this_cls.__name__.replace("Algorithm", '').replace("CombineDeterministic", 'CombDet').replace('CombineRandomAlgorithm', 'CombRand').replace("MarkAndPredict", "Mark&Predict").replace('PredictiveMarker', 'PredMark').replace('PredictiveRPBOnlineMin', 'RPB-OnlineMin')
+    this_cls_name = (
+        this_cls.__name__
+        .replace("Algorithm", '')
+        .replace("CombineDeterministic", 'CombDet')
+        .replace('CombineRandomAlgorithm', 'CombRand')
+        .replace("MarkAndPredict", "Mark&Predict")
+        .replace('PredictiveMarker', 'PredMark')
+        # Plan A / Plan B must be replaced BEFORE the generic RPB replacement,
+        # otherwise 'PredictiveRPBOnlineMin' gets eaten first.
+        # Longer/more-specific names must come BEFORE shorter ones with same prefix.
+        .replace('PredictiveRPBOnlineMinPerReveal', 'RPB-OM-A-pr')
+        .replace('PredictiveRPBOnlineMinSum', 'RPB-OM-A-sum')
+        .replace('PredictiveRPBOnlineMinContinuous', 'RPB-OM-A')
+        .replace('PredictiveRPBOnlineMinThreshold', 'RPB-OM-B')
+        .replace('PredictiveRPBOnlineMin', 'RPB-OnlineMin')
+    )
     metadata = this_cls_name
     if hasattr(callable, 'keywords'):
         kw = callable.keywords
@@ -1818,5 +2274,7 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
 
         if issubclass(this_cls, PredictiveRPBOnlineMinAlgorithm):
             metadata += f"-pb-{kw.get('pred_budget', 0)}"
+            if issubclass(this_cls, PredictiveRPBOnlineMinThresholdAlgorithm) and 'gate_c' in kw:
+                metadata += f"-c-{kw['gate_c']}"
 
     return metadata

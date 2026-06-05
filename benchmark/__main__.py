@@ -21,7 +21,7 @@ def process_cache(cache):
         while not trace.done():
             pc, address = trace.next()
             cache.access(pc, address)
-        return cache.stat()
+        return cache.stat(), cache.get_rpb_stats()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -298,6 +298,31 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
+                # Plan A: continuous fractional credit (full pb sweep)
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=2, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=8, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
+                # Plan A-sum: tighter (sum-form) credit
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinSumAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
+                # Plan A-pr: per-reveal hook
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=0, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=1, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=4, max_support_factor=100), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinPerRevealAlgorithm, pred_budget=16, max_support_factor=100), 'PLECO'),
+                # Plan B: lowered threshold gate_c=2.0 (full pb sweep)
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=0, max_support_factor=100, gate_c=2.0), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=1, max_support_factor=100, gate_c=2.0), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=2.0), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=16, max_support_factor=100, gate_c=2.0), 'PLECO'),
+                # Plan B: more aggressive thresholds at pb=4 for gate_c sweep
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.5), 'PLECO'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.2), 'PLECO'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'PLECO'), LRUAlgorithm]),
@@ -323,6 +348,21 @@ if __name__ == "__main__":
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
                 PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
+                # Plan A: continuous fractional credit
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=0, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=1, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=2, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=4, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=8, max_support_factor=100), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinContinuousAlgorithm, pred_budget=16, max_support_factor=100), 'POPU'),
+                # Plan B: lowered threshold gate_c=2.0
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=0, max_support_factor=100, gate_c=2.0), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=1, max_support_factor=100, gate_c=2.0), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=2.0), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=16, max_support_factor=100, gate_c=2.0), 'POPU'),
+                # Plan B: more aggressive thresholds at pb=4
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.5), 'POPU'),
+                PredictAlgorithmFactory.generate_predictive_algorithm(partial(PredictiveRPBOnlineMinThresholdAlgorithm, pred_budget=4, max_support_factor=100, gate_c=1.2), 'POPU'),
             ])
             combiner_types.extend([
                 (partial(CombineDeterministicAlgorithm, switch_bound=1, lazy_evictor_type=LRUEvictor), [PredictAlgorithmFactory.generate_predictive_algorithm(PredictAlgorithm, 'POPU'), LRUAlgorithm]),
@@ -564,7 +604,9 @@ if __name__ == "__main__":
         with Pool(processes=num_workers) as pool:
             stats = list(tqdm.tqdm(pool.map(process_cache, caches), total=len(caches)))
         for i, stat in enumerate(stats):
-            caches[i].set_stat(stats[i][0], stats[i][1], stats[i][2])
+            base_stat, rpb_stat = stats[i]
+            caches[i].set_stat(base_stat[0], base_stat[1], base_stat[2])
+            caches[i].set_rpb_stats(rpb_stat)
     else:
         with DataTrace(file_path) as trace:
             with tqdm.tqdm(desc="Producing cache on MemoryTrace") as pbar:
@@ -573,8 +615,10 @@ if __name__ == "__main__":
                     for cache in caches:
                         cache.access(pc, address)
                     pbar.update(1)
+        for cache in caches:
+            cache.set_rpb_stats(cache.get_rpb_stats())
 
-    table = PrettyTable() 
+    table = PrettyTable()
 
     opt_miss = np.inf
     if 'OPT' in cache_dict:
@@ -615,4 +659,28 @@ if __name__ == "__main__":
         with open(os.path.join(args.output_root_dir, filename), "w", encoding="utf-8") as file:
             file.write(table.get_csv_string())
     print(table)
+
+    # RPB instrumentation summary (only printed if any algorithm exposed counters)
+    rpb_rows = []
+    for i, (pretty_name, _, _) in enumerate(funcs):
+        s = getattr(caches[i], 'rpb_stats', None)
+        if s:
+            rpb_rows.append((pretty_name, s))
+    if rpb_rows:
+        rpb_table = PrettyTable()
+        rpb_table.field_names = [
+            "Name", "L0-miss", "Non-L0-miss",
+            "Gate-Pass", "Gate-Fail", "Pass Rate",
+            "Pred-Used (non-L0)", "OM-Used (non-L0)",
+        ]
+        for name, s in rpb_rows:
+            non_l0 = s['gate_pass_count'] + s['gate_fail_count']
+            pass_rate = (s['gate_pass_count'] / non_l0) if non_l0 > 0 else 0.0
+            rpb_table.add_row([
+                name,
+                s['l0_miss_count'], non_l0,
+                s['gate_pass_count'], s['gate_fail_count'], f"{pass_rate:.4f}",
+                s['non_l0_pred_evictions'], s['non_l0_om_evictions'],
+            ])
+        print(rpb_table)
             
