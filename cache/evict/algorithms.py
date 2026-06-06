@@ -1648,111 +1648,6 @@ class PredictiveRPBOnlineMinAlgorithm(PredictiveOnlineMinAlgorithm):
         return hit
 
 
-class PredictiveRPBOnlineMinSimpleAlgorithm(PredictiveRPBOnlineMinAlgorithm):
-    """RPB-OnlineMin without gate-pass logic.
-
-    On L0 miss: reset budget to tau, use predictor.
-    On non-L0 miss: if budget >= 1, use predictor (budget -= 1); else use OM.
-    No rpb_y tracking, no gate-pass/gate-fail, no budget replenishment
-    from support structure changes. Budget only comes from L0 resets.
-    """
-
-    def access(self, pc, address) -> bool:
-        self.before_pred(pc, address)
-
-        handled, hit, target_index = self._warmup_access(pc, address)
-        if handled:
-            self.after_pred(pc, address, target_index)
-            return hit
-
-        cache_set = {p for p in self.cache if p is not None}
-        extras = [p for p in cache_set if p not in self.support]
-        if extras:
-            raise RuntimeError(
-                'PredictiveRPBOnlineMinSimple invariant violated (pre-evict). '
-                f'addr={address} extras={extras}'
-            )
-
-        hit = address in self.cache
-        target_index = None
-        if hit:
-            target_index = self.cache.index(address)
-            self.pcs[target_index] = pc
-
-        layer_i = self.layer_of.get(address, 0)
-        forgiveness = (layer_i == 0 and len(self.support) == self.max_support)
-        eviction_layer = 1 if forgiveness else layer_i
-
-        if not hit:
-            if None in self.cache:
-                target_index = self.cache.index(None)
-                self.cache[target_index] = address
-                self.pcs[target_index] = pc
-            else:
-                if forgiveness:
-                    victim_idx = self._onlinemin_victim_idx(eviction_layer)
-                    target_index = victim_idx
-                    self.cache[target_index] = address
-                    self.pcs[target_index] = pc
-                else:
-                    use_predictor = False
-                    if self.preds is not None:
-                        if layer_i == 0:
-                            use_predictor = True
-                            self.pred_budget = self.pred_budget_init
-                        else:
-                            if self.pred_budget >= 1:
-                                use_predictor = True
-                                self.pred_budget -= 1
-
-                    if use_predictor:
-                        candidate_pages = self._onlinemin_eviction_candidate_pages(eviction_layer)
-                        candidate_indices = [self.cache.index(p) for p in candidate_pages]
-                        if not candidate_indices:
-                            candidate_indices = list(range(self.k))
-                        scored_candidates = [(i, self.preds[i]) for i in candidate_indices]
-                        victim_idx = self.evictor.evict(scored_candidates)
-                        target_index = victim_idx
-                        self.cache[target_index] = address
-                        self.pcs[target_index] = pc
-                    else:
-                        victim_idx = self._onlinemin_victim_idx(eviction_layer)
-                        target_index = victim_idx
-                        self.cache[target_index] = address
-                        self.pcs[target_index] = pc
-
-        self._update_layers_after_request(address, layer_i, forgiveness)
-
-        cache_set = {p for p in self.cache if p is not None}
-        extras = [p for p in cache_set if p not in self.support]
-        if extras:
-            raise RuntimeError(
-                'PredictiveRPBOnlineMinSimple invariant violated (post). '
-                f'addr={address} hit={hit} layer_i={layer_i} forgiveness={forgiveness} '
-                f'extras={extras}'
-            )
-
-        if target_index is None:
-            target_index = 0
-        self.after_pred(pc, address, target_index)
-
-        return hit
-
-
-class PredictiveRPBOnlineMinChargeFlagAlgorithm(PredictiveRPBOnlineMinAlgorithm):
-    """RPB-OnlineMin with F-flag gated L0 budget replenishment (paper-faithful).
-
-    Differs from the base ``PredictiveRPBOnlineMinAlgorithm`` only at L0:
-    budget += tau is applied only if the previous epoch contained at least
-    one gate-pass (charge_flag == 1). This matches the paper's F-flag gating.
-    """
-
-    def _replenish_l0_budget(self) -> None:
-        if self.charge_flag == 1:
-            self.pred_budget += self.pred_budget_init
-        self.charge_flag = 0
-
-
 ####################################################################
 
 class PredictiveRPBOnlineMinHitCreditAlgorithm(PredictiveRPBOnlineMinAlgorithm):
@@ -1993,8 +1888,6 @@ def pretty_print(callable: Union[EvictAlgorithm, partial], verbose=False) -> str
         # otherwise 'PredictiveRPBOnlineMin' gets eaten first.
         # Longer/more-specific names must come BEFORE shorter ones with same prefix.
         .replace('PredictiveRPBOnlineMinHitCredit', 'RPB-OM-HC')
-        .replace('PredictiveRPBOnlineMinSimple', 'RPB-OM-S')
-        .replace('PredictiveRPBOnlineMinChargeFlag', 'RPB-OnlineMin-CF')
         .replace('PredictiveRPBOnlineMin', 'RPB-OnlineMin')
     )
     metadata = this_cls_name
