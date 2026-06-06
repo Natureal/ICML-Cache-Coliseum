@@ -12,9 +12,8 @@ This fork adds the **OnlineMin** family of algorithms in [`cache/evict/algorithm
 - **`OnlineMinAlgorithm`** — prediction-free `H_k`-competitive randomized paging baseline.
 - **`PredictiveOnlineMinAlgorithm`** — OnlineMin with predictor-driven eviction on L0 misses.
 - **`PredictiveRPBOnlineMinAlgorithm`** — budget-gated predictor override (RPB-OM). Budget τ is reset on L0 misses and consumed on non-L0 misses.
-- **`PredictiveRPBOnlineMinHitCreditAlgorithm`** — RPB-OM-HC variant. Accumulates fractional credit from cache hits (`1/(unrevealed+1)` per hit); credit is not reset on L0 misses and converts to budget when it reaches 1.
+- **`PredictiveRPBOnlineMinHitCreditAlgorithm`** — RPB-OM-HC variant. Accumulates fractional credit from cache hits; credit is not reset on L0 misses and converts to budget when it reaches 1.
 
-All variants work with every predictor the benchmark supports (PLECO, POPU, LRB, Parrot, Oracle-Dis, Oracle-Bin).
 
 ## Usage
 
